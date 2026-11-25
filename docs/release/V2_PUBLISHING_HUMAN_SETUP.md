@@ -1,0 +1,162 @@
+# V2 Publishing Human Setup Checklist
+
+This checklist tracks release tasks that cannot be completed by CI or agents
+alone because they require account ownership, store-console access, secrets, or
+maintainer decisions.
+
+Use this alongside the v2 distribution matrix before enabling real publishing
+jobs. Automation may support dry-run mode before these items are complete, but
+production publishing cannot be verified without them.
+
+For the current cross-issue blocker list and recommended parallel setup order,
+see [V2 Human-In-Loop Blocker Index](./V2_HUMAN_IN_LOOP_BLOCKERS.md).
+
+## Google Play
+
+Related issues: #681, #585, #657.
+
+- [ ] Create or confirm the Play Console app for each public v2 package ID,
+      including a **new** listing for Aika Stream (`com.developerscoffee.tv.midas`).
+      This is not a rename of `io.airo.app.tv`.
+- [x] Confirm the Airo mobile package ID: `io.airo.app`.
+- [x] Confirm the Aika Stream Android TV package ID: `com.developerscoffee.tv.midas`.
+- [ ] Decide whether mobile and tablet share one adaptive listing or use
+      separate listings.
+- [ ] Create a Play service account for release automation.
+- [ ] Grant the service account release permissions for the target apps.
+- [ ] Store the service account JSON as a GitHub Actions secret.
+- [x] Configure Fastlane to read Play credential path and package ID from
+      environment variables. See
+      [Fastlane Credential Setup](./FASTLANE_CREDENTIALS.md).
+- [ ] Confirm the first upload track for each app: internal, alpha, beta,
+      production, or no-upload.
+- [ ] Confirm whether TV uses the same Play app with device targeting or a
+      separate Android TV listing.
+- [x] Keep release workflows in no-upload mode by default and require an
+      explicit Play track before uploading AABs.
+- [x] Wire mobile/tablet and TV workflows to fail fast when Play upload is
+      requested without `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`.
+
+## Firebase App Distribution
+
+Related issues: #682, #574, #756.
+
+- [ ] Create or confirm Firebase apps for each package ID that should receive
+      internal APKs.
+- [ ] Register a Firebase Android client for Aika Stream
+      (`com.developerscoffee.tv.midas`) and represent it in Flutter Firebase
+      options / `GOOGLE_SERVICES_JSON`. The closed #574 client was
+      `io.airo.app.tv` and does not apply to this package.
+- [x] Confirm `GOOGLE_SERVICES_JSON` exists as a GitHub secret. Secret contents
+      cannot be read back from GitHub; compare against the local ignored config
+      before publishing.
+- [ ] Add or confirm Firebase Android client configs for the remaining
+      registered `io.airo.app.*` mobile/tablet packages that should use
+      Firebase services.
+- [ ] Create a Firebase service account or distribution token for CI.
+- [ ] Store the Firebase service account JSON as the GitHub Actions secret
+      `FIREBASE_SERVICE_ACCOUNT_JSON`.
+- [ ] Create tester groups for mobile/tablet QA and TV QA.
+- [ ] Confirm whether TV APK distribution through Firebase is part of this
+      release wave.
+- [x] Keep Firebase App Distribution in no-upload mode by default and require
+      explicit app IDs, tester groups, and credentials before uploading APKs.
+- [x] Wire mobile/tablet and TV workflows to fail fast when Firebase upload is
+      requested without app IDs, tester groups, or
+      `FIREBASE_SERVICE_ACCOUNT_JSON`.
+
+## Android Signing
+
+Related issues: #677, #678, #681.
+
+- [ ] Confirm the production Android keystore owner.
+- [ ] Store the keystore as a base64 GitHub Actions secret.
+- [ ] Store keystore password, key alias, and key password as GitHub Actions
+      secrets.
+- [ ] Confirm whether internal QA uses production signing or a release-candidate
+      signing key.
+- [ ] Confirm key backup and rotation ownership outside the repository.
+
+## App Store Connect / Fastlane
+
+Related issue: #585.
+
+- [x] Configure iOS Fastlane Appfile values from environment variables instead
+      of committed account identifiers.
+- [ ] Confirm Apple Developer Program membership before adding iOS/iPadOS to a
+      release wave.
+- [ ] Create App Store Connect API credentials if iOS/iPadOS enters scope.
+- [ ] Configure signing certificates and provisioning profiles if iOS/iPadOS
+      enters scope.
+- [ ] Store `MATCH_PASSWORD`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, and
+      `ASC_KEY_CONTENT` as GitHub Actions secrets before TestFlight/App Store
+      upload.
+
+## macOS Developer ID / Homebrew
+
+Related issue: `.github/issues/v2-macos-release.md`.
+
+- [ ] Create or export a Developer ID Application certificate for
+      `com.developerscoffee.airo.tv`.
+- [ ] Add GitHub Actions secrets: `APPLE_CERTIFICATE_BASE64`,
+      `APPLE_CERTIFICATE_PASSWORD`, `APPLE_KEYCHAIN_PASSWORD`,
+      `MACOS_CODESIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and
+      `APPLE_APP_SPECIFIC_PASSWORD`.
+- [ ] Run `.github/workflows/airo-macos-release.yml` with
+      `profile=tv` and `require_notarization=true`.
+- [ ] Confirm `codesign`, `notarytool`, `stapler`, and `spctl` pass before a
+      public direct-download macOS release.
+- [ ] Review generated `homebrew/airo-tv.rb` and decide whether to
+      submit it to `homebrew-cask` or keep it as release evidence for the first
+      macOS launch.
+
+## Distribution Channels
+
+Related issues: #675, #685, #647, #657.
+
+- [ ] Decide whether the first v2 release wave includes GitHub Releases only,
+      Google Play, Firebase App Distribution, Amazon Appstore, F-Droid, or a
+      subset.
+- [ ] Confirm whether Fire TV is supported, compatible, experimental, or
+      deferred for the first release.
+- [ ] Confirm whether legacy Android TV boxes are supported, compatible,
+      experimental, or unsupported.
+- [ ] Confirm whether direct APK install is officially supported for every
+      published profile or only for selected profiles.
+- [ ] Confirm whether direct macOS download and Homebrew Cask are public in the
+      same v2 release or staged as draft release evidence first.
+
+## Repository Governance
+
+Related issues: #687, #689.
+
+- [x] Choose the root project license.
+- [x] Add the root `LICENSE` after the license is chosen.
+- [x] Replace Airo-owned package placeholder license files.
+- [x] Document v2 third-party notices for the current release profiles.
+- [ ] Confirm whether any private or commercial dependencies are bundled in v2
+      release profiles.
+- [ ] Resolve the open items in
+      [V2 License Review](./V2_LICENSE_REVIEW.md).
+- [ ] Decide whether GitHub Discussions should be enabled for public support.
+- [ ] Confirm CODEOWNERS entries for release, security, docs, v2 platform, and
+      app/profile ownership.
+- [ ] Confirm whether funding/sponsor configuration is intentionally absent.
+- [ ] Generate repository-health evidence with
+      `dart run melos run release:repo-health-preflight`.
+
+## Current Non-Secret Defaults
+
+- v2 implementation starts from latest `origin/main`.
+- GitHub Release direct-download APKs publish `SHA256SUMS` and a combined
+  release manifest through the v2 orchestrator.
+- Public release docs must avoid exposing playlist URLs, credentials, local
+  network addresses, or private user data.
+- Store uploads should support dry-run/no-upload mode until credentials and
+  tracks are confirmed.
+- Play upload automation supports `internal`, `alpha`, `beta`, `production`,
+  and `none` tracks for selected v2 Android profiles.
+- Firebase App Distribution automation supports `upload` and `none` modes for
+  selected v2 Android profiles.
+- macOS automation supports unsigned dry-run artifacts and signed/notarized
+  public-ready artifacts when Apple Developer ID secrets are present.

@@ -1,0 +1,410 @@
+# =============================================================================
+# PR Checks Workflow - Optimized for Fast Feedback
+# =============================================================================
+# This workflow is designed to provide fast feedback on PRs (<5 minutes)
+# More comprehensive checks (coverage, security scans, builds) run in the
+# release workflow or on push to main.
+# =============================================================================
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [ main, master, develop ]
+
+# Cancel any in-progress runs for the same PR
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.4'
+
+jobs:
+  # Branch protection on main requires a check named exactly `sonarqube`.
+  # The full scan is `sonarcloud-scan` in ci.yml and only runs on push to
+  # long-lived branches, so PRs never posted that context.
+  sonarqube:
+    name: sonarqube
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Acknowledge PR sonar gate
+        run: echo "Full SonarQube analysis is job sonarcloud-scan on push to main."
+
+  # ============================================
+  # PR Validation (fast checks) - ~15 seconds
+  # ============================================
+  pr-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check file changes
+        uses: dorny/paths-filter@v4
+        id: changes
+        with:
+          filters: |
+            flutter:
+              - 'app/**'
+              - 'packages/**'
+            docs:
+              - '**.md'
+
+      - name: Enforce docs completeness
+        env:
+          AIRO_DOCS_BYPASS: ${{ contains(join(github.event.pull_request.labels.*.name, ' '), 'docs-not-needed') && 'true' || 'false' }}
+          AIRO_DOCS_BASE: ${{ github.event.pull_request.base.sha }}
+          AIRO_DOCS_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          chmod +x scripts/check-docs-completeness.sh
+          scripts/check-docs-completeness.sh \
+            --base "$AIRO_DOCS_BASE" \
+            --head "$AIRO_DOCS_HEAD"
+
+      - name: Enforce bundled model artifact guardrail
+        run: |
+          chmod +x scripts/check-bundled-model-artifacts.sh
+          scripts/check-bundled-model-artifacts.sh
+
+      - name: Enforce Android SDK baseline across modules
+        run: |
+          chmod +x scripts/check-android-sdk-baseline.sh scripts/test-check-android-sdk-baseline.sh
+          scripts/test-check-android-sdk-baseline.sh
+          scripts/check-android-sdk-baseline.sh
+
+      # A new blanket `-keep class <pkg>.** { *; }` silently re-tanks the Play
+      # Console App Bundle Explorer optimization score the way the old
+      # androidx.** keep did (65b0b2d5) -- catch it here, not after upload.
+      - name: Enforce ProGuard blanket-keep budget
+        run: |
+          chmod +x scripts/check-proguard-keep-budget.sh
+          scripts/check-proguard-keep-budget.sh
+
+      - name: Validate platform build profiles
+        run: |
+          chmod +x scripts/check-ci-cache-policy.py scripts/check-build-profiles.py scripts/generate-release-manifest.py scripts/test-generate-release-manifest.sh scripts/generate-release-qualification-report.py scripts/test-generate-release-qualification-report.sh
+          ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' \
+            .github/workflows/release-orchestrator.yml \
+            .github/workflows/aika-stream-release.yml \
+            .github/workflows/airo-mobile-tablet-release.yml \
+            .github/workflows/virustotal-scan.yml
+          python3 -m py_compile scripts/check-ci-cache-policy.py scripts/check-build-profiles.py scripts/generate-release-manifest.py scripts/generate-release-qualification-report.py scripts/resolve_release_tv_apk.py scripts/test_resolve_release_tv_apk.py
+          python3 scripts/test_resolve_release_tv_apk.py
+          scripts/check-ci-cache-policy.py
+          scripts/check-build-profiles.py
+          scripts/test-generate-release-manifest.sh
+          scripts/test-generate-release-qualification-report.sh
+          chmod +x scripts/test-publish-framework.sh
+          scripts/test-publish-framework.sh
+
+      - name: Validate Engineering Council module manifests
+        run: |
+          chmod +x scripts/check-module-manifests.py scripts/test-check-module-manifests.sh
+          ruby -e 'require "yaml"; Dir.glob("packages/*/module.yaml").each { |f| YAML.load_file(f); puts "yaml ok #{f}" }'
+          scripts/test-check-module-manifests.sh
+          scripts/check-module-manifests.py
+
+      - name: Enforce Edge Intelligence import boundary
+        run: |
+          chmod +x scripts/check-edge-import-boundaries.py scripts/test-check-edge-import-boundaries.py
+          python3 scripts/test-check-edge-import-boundaries.py
+          scripts/check-edge-import-boundaries.py
+
+      - name: Enforce package reachability (#1681)
+        run: |
+          chmod +x scripts/check-package-reachability.py
+          scripts/check-package-reachability.py
+
+      - name: Enforce private-src import ban (#1681)
+        run: |
+          chmod +x scripts/check-private-src-imports.py
+          scripts/check-private-src-imports.py
+
+      - name: Report dead providers (best-effort, non-blocking) (#1681)
+        run: |
+          chmod +x scripts/report-dead-providers.py
+          scripts/report-dead-providers.py || true
+
+  # ============================================
+  # Code Quality (analyze, format) - ~2 minutes
+  # ============================================
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+
+      - name: Get dependencies (parallel)
+        run: |
+          (cd packages/core_domain && flutter pub get) &
+          (cd packages/core_ui && flutter pub get) &
+          (cd packages/core_data && flutter pub get) &
+          (cd packages/core_ai && flutter pub get) &
+          (cd packages/core_auth && flutter pub get) &
+          (cd packages/core_edge_intelligence && dart pub get) &
+          (cd packages/platform_iptv_org_api && dart pub get) &
+          wait
+          cd app && flutter pub get
+
+      - name: Run code generation
+        run: scripts/run-ci-codegen.sh
+
+      - name: Configure firebase_options.dart
+        env:
+          FIREBASE_OPTIONS_DART_B64: ${{ secrets.FIREBASE_OPTIONS_DART_B64 }}
+        run: |
+          cd app
+          if [[ -n "$FIREBASE_OPTIONS_DART_B64" ]]; then
+            echo "$FIREBASE_OPTIONS_DART_B64" | base64 -d > lib/firebase_options.dart
+            echo "Using FIREBASE_OPTIONS_DART_B64."
+          else
+            cp lib/firebase_options.dart.template lib/firebase_options.dart
+            echo "::warning::FIREBASE_OPTIONS_DART_B64 is not set; using placeholder firebase_options.dart."
+          fi
+
+      - name: Run Flutter Analyze
+        run: |
+          cd app
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Check formatting
+        run: |
+          cd app
+          find lib test -name "*.dart" ! -name "*.g.dart" ! -name "*.freezed.dart" -print0 | xargs -0 dart format --set-exit-if-changed
+
+  # ============================================
+  # Fast Unit Tests (core packages only) - ~2 minutes
+  # App tests and coverage moved to release workflow
+  # ============================================
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+
+      - name: Get core package dependencies (parallel)
+        run: |
+          (cd packages/core_domain && flutter pub get) &
+          (cd packages/core_ui && flutter pub get) &
+          (cd packages/core_data && flutter pub get) &
+          (cd packages/core_ai && flutter pub get) &
+          (cd packages/core_auth && flutter pub get) &
+          (cd packages/core_edge_intelligence && dart pub get) &
+          wait
+
+      - name: Run core package tests (parallel)
+        run: |
+          echo "Running core package tests in parallel..."
+          (cd packages/core_domain && flutter test --reporter=compact) &
+          (cd packages/core_data && flutter test --reporter=compact) &
+          (cd packages/core_ai && flutter test --reporter=compact) &
+          (cd packages/core_auth && flutter test --reporter=compact) &
+          (cd packages/core_edge_intelligence && dart test --reporter=compact) &
+          (cd packages/platform_iptv_org_api && dart test --reporter=compact) &
+          wait
+          echo "All core package tests completed!"
+
+      # feature_mind carries the M22 runtime port and the R01-R04 rule tests.
+      # Its *.freezed.dart is gitignored, so codegen must run before the tests
+      # can compile at all -- without this step the package fails with a
+      # misleading "Couldn't find constructor ProcessingEvent_*".
+      - name: Run Airo Mind package tests
+        run: |
+          cd packages/feature_mind
+          flutter pub get
+          dart run build_runner build
+          flutter test --reporter=compact
+
+      # Rules R03 and R05 are repo gates, not package tests. A gate CI never
+      # invokes is not a gate.
+      - name: Check Airo Mind design rules (R03, R05)
+        run: |
+          scripts/check-mind-projection-routes.sh
+          scripts/check-mind-private-devices.sh
+
+  # ============================================
+  # Airo Mind shell (flavour-scoped)
+  # ============================================
+  # Flavours are separate pubspecs, so `lib/main_mind.dart`, `lib/core/mind/**`
+  # and `test_mind/**` resolve under NO pubspec any other job installs.
+  # `app/analysis_options.yaml` excludes them for exactly that reason, and the
+  # default `flutter analyze` / `flutter test` therefore never sees them. This
+  # job is the only thing that does: it swaps in the Mind profile the way
+  # `app/tool/run_mind_macos.sh` does, then analyses, tests and compiles
+  # against it.
+  #
+  # The analysis options are swapped too, because `dart analyze <path>` cannot
+  # override an exclude -- it reports "No issues found!" on a hard type error
+  # in an excluded file. See the header of `app/analysis_options_mind.yaml`.
+  airo-mind-shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-mind-${{ hashFiles('app/pubspec_mind.yaml') }}
+          restore-keys: pub-${{ runner.os }}-
+
+      # feature_mind's *.freezed.dart is gitignored, so without codegen the
+      # shell fails to compile with a misleading "Couldn't find constructor
+      # ProcessingEvent_*" from inside the package.
+      - name: Generate feature_mind code
+        run: |
+          cd packages/feature_mind
+          flutter pub get
+          dart run build_runner build
+
+      - name: Swap in the Mind flavour
+        run: |
+          cp app/pubspec_mind.yaml app/pubspec.yaml
+          cp app/analysis_options_mind.yaml app/analysis_options.yaml
+          cd app
+          flutter pub get
+
+      - name: Configure firebase_options.dart
+        env:
+          FIREBASE_OPTIONS_DART_B64: ${{ secrets.FIREBASE_OPTIONS_DART_B64 }}
+        run: |
+          cd app
+          if [[ -n "$FIREBASE_OPTIONS_DART_B64" ]]; then
+            echo "$FIREBASE_OPTIONS_DART_B64" | base64 -d > lib/firebase_options.dart
+            echo "Using FIREBASE_OPTIONS_DART_B64."
+          else
+            cp lib/firebase_options.dart.template lib/firebase_options.dart
+            echo "::warning::FIREBASE_OPTIONS_DART_B64 is not set; using placeholder firebase_options.dart."
+          fi
+
+      # Same flags as the `code-quality` job: infos and warnings are advisory
+      # in this repo, errors are not.
+      #
+      # `integration_test/mind_journey_device_test.dart` is analysed here so
+      # the gated Pixel 9 journey (#1771) cannot drift against the Mind
+      # pubspec. Opt-in via AIRO_RUN_MIND_JOURNEY; CI never executes it.
+      - name: Analyze the Mind shell
+        run: |
+          cd app
+          flutter analyze --no-fatal-infos --no-fatal-warnings \
+            lib/main_mind.dart lib/core/mind \
+            integration_test/mind_journey_device_test.dart
+
+      - name: Run Mind shell tests
+        run: |
+          cd app
+          flutter test test_mind/ --reporter=compact \
+            --dart-define=APP_VARIANT=mind
+
+      # `flutter test` compiles for the host only. This proves the profile also
+      # compiles the entrypoint into a device bundle -- the whole point of
+      # expanding it.
+      #
+      # The Android APK build (`scripts/build-mind.sh`) is deliberately NOT the
+      # gate here, and no longer because it is broken. Both original blockers
+      # are closed: the Gradle 9 `Project.exec()` break in the vendored cargokit
+      # plugin is patched to `ExecOperations`, and the APK builds, installs and
+      # runs on device (#1550).
+      #
+      # What remains is narrower, and is a HOST constraint rather than a
+      # failure:
+      #
+      #   - arm64 only. `llama-cpp-sys-2`'s build script panics on
+      #     `armv7-linux-androideabi`, so `scripts/build-mind.sh` pins
+      #     `--target-platform=android-arm64`. Mind is an arm64 product.
+      #   - Cross-compiling `whisper-rs-sys` from a macOS host still fails to
+      #     link (`could not find native static library ggml-blas`) because its
+      #     build script evaluates `cfg!(macos)` on the HOST. A Linux runner
+      #     builds it fine.
+      #
+      # So this could be promoted to `scripts/build-mind.sh` on a Linux runner.
+      # It is not, because compiling whisper.cpp and llama.cpp for the NDK adds
+      # tens of minutes to every PR, and GitHub Actions minutes are a costed
+      # shared resource. The device path is covered by the release workflow.
+      - name: Compile the Mind entrypoint
+        run: |
+          cd app
+          flutter build bundle --target=lib/main_mind.dart --dart-define=APP_VARIANT=mind
+
+  # ============================================
+  # PR Summary Comment
+  # ============================================
+  pr-summary:
+    runs-on: ubuntu-latest
+    needs: [pr-validation, code-quality, tests, airo-mind-shell]
+    if: always()
+    steps:
+      - name: Comment PR with summary
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prValidation = '${{ needs.pr-validation.result }}';
+            const codeQuality = '${{ needs.code-quality.result }}';
+            const tests = '${{ needs.tests.result }}';
+            const mindShell = '${{ needs.airo-mind-shell.result }}';
+
+            const getEmoji = (status) => status === 'success' ? '✅' : status === 'skipped' ? '⏭️' : '❌';
+
+            const comment = `## 🚀 PR Quick Check Summary
+
+            | Check | Status | Description |
+            |-------|--------|-------------|
+            | PR Validation | ${getEmoji(prValidation)} ${prValidation} | Title format, docs, bundled model guardrail |
+            | Code Quality | ${getEmoji(codeQuality)} ${codeQuality} | Analyze, formatting |
+            | Core Tests | ${getEmoji(tests)} ${tests} | Core package unit tests |
+            | Airo Mind Shell | ${getEmoji(mindShell)} ${mindShell} | Mind flavour analyze, tests, entrypoint compile |
+
+            > 💡 **Note:** Full app tests, coverage reports, and security scans run on merge to main.
+
+            [View Details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

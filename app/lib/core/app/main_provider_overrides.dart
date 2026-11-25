@@ -1,0 +1,56 @@
+import 'package:airo_pro_bootstrap/airo_pro_bootstrap.dart' as pro_bootstrap;
+import 'package:core_data/core_data.dart';
+import 'package:core_product_shell/core_product_shell.dart';
+import 'package:feature_iptv/feature_iptv.dart';
+import 'package:flutter_riverpod/misc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../features/coins/application/providers/auth_coins_identity.dart';
+import '../../features/coins/application/providers/coins_currency_provider.dart';
+import '../../features/coins/application/providers/coins_identity_provider.dart';
+import '../../features/iptv/cast_multiview_sender_provider_override.dart';
+import '../../features/iptv/iptv_cast_provider_override.dart';
+import '../../features/settings/application/ai_model_management.dart';
+import '../providers/navigation_provider.dart';
+
+/// Shell-owned provider overrides, plus whatever the composed modules bring.
+///
+/// Anything a module needs belongs in that module's `providerOverridesFor`
+/// (see [ModuleRegistry.allProviderOverrides]) rather than here, so a shell
+/// can never mount a module's routes while forgetting its providers.
+///
+/// [moduleRegistry] is required for exactly that reason: an optional registry
+/// would let a caller build a scope that mounts module routes with none of the
+/// providers behind them.
+List<Override> buildMainProviderOverrides({
+  required SharedPreferences prefs,
+  required ModuleRegistry moduleRegistry,
+  EpgReminderNotificationGateway? epgReminderGateway,
+}) {
+  return [
+    coinsIdentityProvider.overrideWithValue(const AuthServiceCoinsIdentity()),
+    sharedPreferencesProvider.overrideWithValue(prefs),
+    coinsCurrencyProvider.overrideWith((ref) => CoinsCurrencyNotifier(prefs)),
+    secureStoreProvider.overrideWithValue(SecureStoreFactory.createSecure()),
+    // Play / public builds keep the unavailable default. airo-pro overrides
+    // this provider through createProviderOverrides().
+    if (epgReminderGateway != null)
+      epgReminderNotificationGatewayProvider.overrideWithValue(
+        epgReminderGateway,
+      ),
+    realIptvCastControllerOverride(),
+    realCastMultiviewSenderOverride(),
+    // Navigation chrome follows composition. R05 composes Mind out of
+    // shared-surface builds (web), and the router then mounts a placeholder in
+    // that branch — showing the Assistant destination anyway would advertise a
+    // journey this binary does not carry. Keyed on the registry rather than on
+    // a platform check so the two can never disagree.
+    if (!moduleRegistry.isRegistered('mind'))
+      appNavigationPolicyProvider.overrideWithValue(
+        appNavigationPolicy.without(AppNavigationTab.assistant),
+      ),
+    ...moduleRegistry.allProviderOverrides,
+    ...intelligenceLiveCatalogOverrides(),
+    ...pro_bootstrap.createProviderOverrides(),
+  ];
+}

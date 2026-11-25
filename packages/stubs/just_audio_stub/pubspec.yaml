@@ -1,0 +1,8 @@
+name: just_audio
+description: Stub implementation of just_audio for TV builds
+version: 0.10.5
+publish_to: none
+
+environment:
+  sdk: '>=3.12.2 <4.0.0'
+  flutter: '>=3.44.4'

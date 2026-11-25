@@ -1,0 +1,309 @@
+//! `#1397` acceptance: `.wav` / `.m4a` → transcript, offline, streaming, no temp files.
+//!
+//! Runs only with `--features whisper`, because it needs the C++ backend and a
+//! model on disk.
+
+#![cfg(feature = "whisper")]
+
+use std::path::PathBuf;
+
+use airo_mind_whisper::{
+    AudioInput, CancelToken, EngineError, ResourceBudget, Supervisor, TranscriptSegment,
+    TranscriptionOptions, WhisperSpeechEngine,
+};
+
+fn model_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/ggml-tiny.en.bin")
+}
+
+fn fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/jfk.wav")
+}
+
+/// Minimal 16-bit PCM WAV reader.
+///
+/// Hand-written rather than taking `hound`: it is thirty lines, and a new
+/// dependency on the audio path needs a Constitution §6 scorecard that this
+/// test does not justify.
+fn read_wav_16k_mono(path: &std::path::Path) -> (Vec<i16>, u32, u16) {
+    let bytes = std::fs::read(path).expect("fixture readable");
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+
+    let u16at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+    let u32at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+
+    let (mut channels, mut rate, mut data) = (0u16, 0u32, None);
+    let mut off = 12;
+    while off + 8 <= bytes.len() {
+        let id = &bytes[off..off + 4];
+        let size = u32at(off + 4) as usize;
+        let body = off + 8;
+        if id == b"fmt " {
+            channels = u16at(body + 2);
+            rate = u32at(body + 4);
+        } else if id == b"data" {
+            data = Some(&bytes[body..(body + size).min(bytes.len())]);
+        }
+        off = body + size + (size & 1);
+    }
+
+    let data = data.expect("wav has a data chunk");
+    let samples = data
+        .chunks_exact(2)
+        .map(|p| i16::from_le_bytes([p[0], p[1]]))
+        .collect();
+    (samples, rate, channels)
+}
+
+/// **The `#1397` exit criterion.** Audio in, transcript out, entirely on-device.
+#[test]
+fn wav_becomes_a_transcript_offline() {
+    let model = model_path();
+    if !model.exists() {
+        eprintln!("skipping: no model at {}", model.display());
+        return;
+    }
+
+    let (samples, rate, channels) = read_wav_16k_mono(&fixture());
+    assert_eq!(rate, 16_000, "fixture is already 16 kHz");
+
+    let engine = WhisperSpeechEngine::load(&model, 512).expect("model loads");
+    let mut supervisor = Supervisor::new(ResourceBudget::new(2048));
+    supervisor.register_speech(Box::new(engine));
+
+    // Segments arrive through the sink as they are produced. Collecting them
+    // here is the TEST's choice; the runtime never accumulates (`I7`).
+    let mut segments: Vec<TranscriptSegment> = Vec::new();
+    supervisor
+        .run_speech(
+            AudioInput {
+                samples: &samples,
+                sample_rate_hz: rate,
+                channels,
+            },
+            &TranscriptionOptions::default(),
+            &CancelToken::new(),
+            &mut |seg| {
+                segments.push(seg);
+                Ok(())
+            },
+        )
+        .expect("transcription succeeds");
+
+    assert!(!segments.is_empty(), "produced no transcript");
+
+    let transcript = segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    // The fixture is the JFK inaugural line. Asserting on content, not just on
+    // "something came back" -- a transcriber that returns empty strings would
+    // otherwise pass.
+    assert!(
+        transcript.contains("country"),
+        "expected recognisable speech, got: {transcript}"
+    );
+    assert!(
+        transcript.contains("ask not") || transcript.contains("fellow americans"),
+        "expected the JFK line, got: {transcript}"
+    );
+
+    // Timestamps are real, not zeroed.
+    assert!(
+        segments.iter().any(|s| s.end_ms > s.start_ms),
+        "segments carry no duration"
+    );
+}
+
+/// Cancellation reaches the real backend, not only the fake one.
+#[test]
+fn a_cancelled_transcription_stops_and_reports_it() {
+    let model = model_path();
+    if !model.exists() {
+        return;
+    }
+    let (samples, rate, channels) = read_wav_16k_mono(&fixture());
+
+    let engine = WhisperSpeechEngine::load(&model, 512).expect("model loads");
+    let mut supervisor = Supervisor::new(ResourceBudget::new(2048));
+    supervisor.register_speech(Box::new(engine));
+
+    let cancel = CancelToken::new();
+    cancel.cancel();
+
+    let r = supervisor.run_speech(
+        AudioInput {
+            samples: &samples,
+            sample_rate_hz: rate,
+            channels,
+        },
+        &TranscriptionOptions::default(),
+        &cancel,
+        &mut |_| Ok(()),
+    );
+    assert!(matches!(
+        r,
+        Err(airo_mind_whisper::RuntimeError::Engine(
+            EngineError::Cancelled
+        ))
+    ));
+}
+
+/// The `secret`-class guarantee: transcription writes nothing to disk.
+///
+/// A CLI backend with `-otxt` would fail this, which is why the engine is
+/// in-process.
+#[test]
+fn transcription_writes_no_files() {
+    let model = model_path();
+    if !model.exists() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+    let before: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+
+    let (samples, rate, channels) = read_wav_16k_mono(&fixture());
+    let engine = WhisperSpeechEngine::load(&model, 512).unwrap();
+    let mut supervisor = Supervisor::new(ResourceBudget::new(2048));
+    supervisor.register_speech(Box::new(engine));
+    let _ = supervisor.run_speech(
+        AudioInput {
+            samples: &samples,
+            sample_rate_hz: rate,
+            channels,
+        },
+        &TranscriptionOptions::default(),
+        &CancelToken::new(),
+        &mut |_| Ok(()),
+    );
+
+    let after: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "transcription created a file -- meeting audio is `secret` class"
+    );
+}
+
+/// `#1664` AC1/AC3: a pinned language hint reaches the real backend through
+/// `Supervisor::run_speech` -> `WhisperSpeechEngine::transcribe` and does not
+/// break transcription. `whisper-rs`'s `FullParams` has no getter, so this
+/// cannot assert whisper.cpp actually decoded in English rather than
+/// auto-detecting it (the model's `.en` weights only speak English anyway) --
+/// that stronger claim, on real bilingual audio, is the golden-set's job
+/// (`#1636`, not yet built). What this proves is the plumbing: a caller that
+/// pins a language still gets a correct transcript back, not a silently
+/// dropped hint or a broken pipeline.
+#[test]
+fn a_pinned_language_hint_does_not_break_transcription() {
+    let model = model_path();
+    if !model.exists() {
+        eprintln!("skipping: no model at {}", model.display());
+        return;
+    }
+
+    let (samples, rate, channels) = read_wav_16k_mono(&fixture());
+    let engine = WhisperSpeechEngine::load(&model, 512).expect("model loads");
+    let mut supervisor = Supervisor::new(ResourceBudget::new(2048));
+    supervisor.register_speech(Box::new(engine));
+
+    let mut segments: Vec<TranscriptSegment> = Vec::new();
+    supervisor
+        .run_speech(
+            AudioInput {
+                samples: &samples,
+                sample_rate_hz: rate,
+                channels,
+            },
+            &TranscriptionOptions {
+                language: Some("en".to_string()),
+            },
+            &CancelToken::new(),
+            &mut |seg| {
+                segments.push(seg);
+                Ok(())
+            },
+        )
+        .expect("transcription succeeds with a pinned language");
+
+    assert!(
+        !segments.is_empty(),
+        "a pinned language hint must not silently produce an empty transcript"
+    );
+    let transcript = segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    assert!(
+        transcript.contains("country"),
+        "expected recognisable speech, got: {transcript}"
+    );
+}
+
+fn speech_m4a_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/speech.m4a")
+}
+
+/// `#1786`: meeting capture writes `.m4a`; preprocess must feed whisper the
+/// same shape as a 16 kHz mono WAV fixture.
+#[test]
+fn speech_m4a_preprocesses_to_a_transcript() {
+    let model = model_path();
+    let audio = speech_m4a_fixture();
+    if !model.exists() {
+        eprintln!("skipping: no model at {}", model.display());
+        return;
+    }
+    if !audio.exists() {
+        eprintln!("skipping: no fixture at {}", audio.display());
+        return;
+    }
+
+    let pcm = airo_mind_audio::preprocess_path(&audio).expect("speech.m4a preprocesses");
+    assert_eq!(pcm.sample_rate_hz, 16_000);
+    assert_eq!(pcm.channels, 1);
+
+    let engine = WhisperSpeechEngine::load(&model, 512).expect("model loads");
+    let mut supervisor = Supervisor::new(ResourceBudget::new(2048));
+    supervisor.register_speech(Box::new(engine));
+
+    let mut segments: Vec<TranscriptSegment> = Vec::new();
+    supervisor
+        .run_speech(
+            AudioInput {
+                samples: &pcm.samples,
+                sample_rate_hz: pcm.sample_rate_hz,
+                channels: pcm.channels,
+            },
+            &TranscriptionOptions::default(),
+            &CancelToken::new(),
+            &mut |seg| {
+                segments.push(seg);
+                Ok(())
+            },
+        )
+        .expect("m4a-backed transcription succeeds");
+
+    let transcript = segments
+        .iter()
+        .map(|s| s.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !transcript.is_empty(),
+        "speech.m4a should yield a non-empty transcript after preprocess"
+    );
+}

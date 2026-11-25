@@ -1,0 +1,139 @@
+# V2 License Review
+
+This document records the current license-readiness baseline for the v2 Android
+publishing wave.
+
+Implementation work for this release line must start from latest `origin/main`.
+
+## Current Status
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Root `LICENSE` | Ready | Root project license is MIT. |
+| README license badge | Ready | README links to the root MIT license. |
+| Internal package license files | Ready | Airo-owned package `LICENSE` files use the root MIT license text. |
+| Vendored Cast library | Documented | `packages/platform_player/third_party/flutter_chrome_cast` declares BSD-3-Clause. Its notice is recorded in `docs/release/V2_THIRD_PARTY_NOTICES.md`. |
+| Private/commercial dependencies | Confirmed absent | The release pubspecs contain no private hosted source or active private overlay. The only Git dependency, pinned `DevelopersCoffee/barista-tuning`, is a public MIT repository. |
+| Artifact provenance | Signed/SLSA required | Android release workflows generate Sigstore-signed SLSA build provenance for the staged APK, AAB, manifest, checksums, and release documents. |
+
+## V2 Release Profiles Reviewed
+
+The current v2 Android publishing candidates are documented in
+`docs/release/V2_DISTRIBUTION_MATRIX.md` and `.github/airo-build-profiles.json`:
+
+- `full`
+- `tv`
+
+The `ios-spm` and `web-validation` profiles are not part of the first v2
+Android publishing wave.
+
+## Direct Dependency Surface
+
+The following direct dependencies appear in at least one v2 Android release
+profile pubspec:
+
+```text
+audio_service
+audioplayers
+cached_network_image
+connectivity_plus
+core_ai
+core_auth
+core_data
+core_domain
+core_ui
+cupertino_icons
+dio
+drift
+equatable
+feature_iptv
+file_picker
+firebase_auth
+firebase_core
+flame
+flutter
+flutter_chrome_cast
+flutter_contacts
+flutter_image_compress
+flutter_local_notifications
+flutter_riverpod
+flutter_tts
+go_router
+google_mlkit_text_recognition
+google_sign_in
+hive
+hive_flutter
+image_picker
+intl
+just_audio
+media_kit
+media_kit_libs_video
+package_info_plus
+path
+path_provider
+pdfx
+permission_handler
+riverpod
+rxdart
+share_plus
+shared_preferences
+sqlite3_flutter_libs
+stockfish
+timezone
+url_launcher
+uuid
+video_player
+wakelock_plus
+```
+
+Several heavy packages are stubbed in edge profiles through
+`dependency_overrides`; this reduces bundled release code for those profiles but
+does not remove the need to confirm license compatibility for any package that
+is actually included in a shipped artifact.
+
+## Native And Vendored Components
+
+Known native or vendored components that require explicit review before public
+distribution:
+
+- Flutter engine and Android Gradle build outputs.
+- Firebase and Google Sign-In Android libraries when included.
+- SQLite native libraries from `sqlite3_flutter_libs`.
+- Media playback and audio service native components.
+- ML/OCR/game/audio packages if a selected profile bundles them instead of a
+  local stub.
+- Vendored `flutter_chrome_cast` BSD-3-Clause source under
+  `packages/platform_player/third_party/flutter_chrome_cast`.
+- Public Git dependency `DevelopersCoffee/barista-tuning` at the lockfile
+  commit, licensed MIT and consumed through `slm_edge_intelligence`.
+- Playlist Engine v2 Rust dependencies: `memmap2` 0.9.11
+  (MIT OR Apache-2.0), `rusqlite` 0.32.1 (MIT), and `libsqlite3-sys` 0.30.1
+  (MIT). `rusqlite` is intentionally used without its `bundled` feature so
+  Airo does not embed a second SQLite runtime alongside the selected platform
+  profile's existing SQLite library.
+
+## Required Before Public Distribution
+
+- Keep the root MIT `LICENSE` and package license files aligned.
+- Keep `docs/release/V2_THIRD_PARTY_NOTICES.md` with the release asset set.
+- Generate redacted local legal/provenance evidence before public release:
+
+  ```bash
+  dart pub global run melos run release:legal-preflight
+  ```
+
+- Regenerate or re-check third-party notices when v2 release profile
+  dependencies change.
+- Confirm whether any private, commercial, gated, or restricted-license
+  dependency is bundled in each release artifact.
+- Confirm that Play Store, direct APK, and any other listing text matches the
+  selected project license and third-party notice obligations.
+- Verify a downloaded public artifact with `gh attestation verify <artifact>
+  --repo DevelopersCoffee/airo`.
+
+## Recorded Decisions
+
+- No private, commercial, gated, or restricted-license dependency is active in
+  the checked release profiles.
+- SHA256-only provenance is not sufficient for the public wave. Release
+  workflows must publish GitHub/Sigstore SLSA build attestations.

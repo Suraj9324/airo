@@ -1,0 +1,37 @@
+name: platform_playlist
+description: "Typed ContentSource contract (M3U, Xtream Codes, Stalker Portal, Jellyfin) and provider adapters for Airo TV."
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=1.17.0"
+
+dependencies:
+  crypto: ^3.0.7
+  flutter:
+    sdk: flutter
+  core_data:
+    path: ../core_data
+  dio: ^5.10.0
+  drift: ^2.23.1
+  equatable: ^2.1.0
+  path: ^1.9.0
+  path_provider: ^2.1.5
+  platform_channels:
+    path: ../platform_channels
+  platform_epg:
+    path: ../platform_epg
+  platform_playlist_import:
+    path: ../platform_playlist_import
+  platform_worker_jobs:
+    path: ../platform_worker_jobs
+  sqlite3: ">=2.7.6 <4.0.0"
+  sqlite3_flutter_libs: ^0.5.32
+
+dev_dependencies:
+  build_runner: ^2.4.13
+  drift_dev: ^2.23.1
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

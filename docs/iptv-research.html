@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IPTV Technology & Architecture Research — Aika Stream</title>
+  <meta name="description" content="Comprehensive overview of IPTV network architecture, codecs, multicast protocols, and why Aika Stream is a strategic investment rather than an expense.">
+
+  <!-- AI Agent & LLM Auto-Discovery -->
+  <link rel="llms-txt" type="text/markdown" href="./llms.txt">
+  <link rel="agent" type="text/markdown" href="./llms.txt">
+
+  <meta name="theme-color" content="#071010">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://developerscoffee.github.io/airo/iptv-research/">
+  <meta property="og:title" content="IPTV Technology & Architecture Research — Aika Stream">
+  <meta property="og:description" content="Detailed overview of IPTV network architecture, codecs, multicast protocols, and the business case for Aika Stream as an investment.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/svg+xml" href="/airo/assets/airo-tv/airo-icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/airo/assets/airo-tv/site.css">
+  <script defer src="/airo/assets/airo-tv/third-party/lucide.min.js"></script>
+  <script defer src="/airo/assets/airo-tv/site.js"></script>
+  <style>
+    .research-hero {
+      padding-top: calc(var(--header) + 40px);
+      padding-bottom: 40px;
+      background: linear-gradient(180deg, oklch(0.09 0.01 255) 0%, var(--bg) 100%);
+      border-bottom: 1px solid var(--border);
+    }
+    .research-hero h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      margin: 16px 0;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+    }
+    .research-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 32px;
+      margin-top: 40px;
+    }
+    .prose-section {
+      margin-bottom: 56px;
+    }
+    .prose-section h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-top: 0;
+      margin-bottom: 20px;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+    .prose-section h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-top: 28px;
+      margin-bottom: 12px;
+      color: var(--green);
+    }
+    .prose-section p {
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+    .prose-section ul {
+      color: var(--muted);
+      margin-bottom: 20px;
+      padding-left: 20px;
+    }
+    .prose-section li {
+      margin-bottom: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 24px 0;
+      font-size: 15px;
+      color: var(--text);
+    }
+    th, td {
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background-color: var(--surface);
+      font-weight: 600;
+      color: var(--green);
+    }
+    tr:nth-child(even) {
+      background-color: oklch(0.1 0.008 255);
+    }
+    .table-responsive {
+      overflow-x: auto;
+      margin: 24px 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .mermaid {
+      background: var(--surface);
+      padding: 24px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      margin: 28px 0;
+      display: flex;
+      justify-content: center;
+    }
+    /* Screen reader only utility class */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    /* Mermaid dark theme overrides */
+    .mermaid svg {
+      background: transparent !important;
+      max-width: 100% !important;
+      height: auto !important;
+    }
+    .mermaid .subgraph, .mermaid .cluster {
+      fill: #0b1313 !important;
+      stroke: var(--border) !important;
+      stroke-width: 1.5px !important;
+      rx: 12px !important;
+      ry: 12px !important;
+    }
+    .mermaid .cluster-label text, .mermaid .subgraph-title {
+      fill: var(--text) !important;
+      font-weight: 700 !important;
+      font-family: 'DM Sans', sans-serif !important;
+      letter-spacing: -0.02em;
+    }
+    .mermaid .node rect, .mermaid .node circle, .mermaid .node polygon, .mermaid .node path {
+      fill: var(--surface-2) !important;
+      stroke: var(--border) !important;
+      stroke-width: 1.5px !important;
+    }
+    .mermaid .node .label {
+      color: var(--text) !important;
+      font-family: 'DM Sans', sans-serif !important;
+      font-weight: 500 !important;
+    }
+    .mermaid .edgePath .path {
+      stroke: var(--green) !important;
+      stroke-width: 2px !important;
+    }
+    .mermaid .edgeLabel rect {
+      fill: var(--surface) !important;
+    }
+    .mermaid .edgeLabel text {
+      fill: var(--muted) !important;
+      font-family: 'DM Sans', sans-serif !important;
+      font-size: 13px !important;
+    }
+    /* Custom node class highlights matching our brand colors */
+    .mermaid .node.control-node rect, .mermaid .node.control-node path, .mermaid .node.control-node polygon {
+      stroke: #607d8b !important;
+      fill: oklch(0.16 0.02 250) !important;
+    }
+    .mermaid .node.headend-node rect, .mermaid .node.headend-node path, .mermaid .node.headend-node polygon {
+      stroke: #0288d1 !important;
+      fill: oklch(0.16 0.03 230) !important;
+    }
+    .mermaid .node.core-node rect, .mermaid .node.core-node path, .mermaid .node.core-node polygon {
+      stroke: var(--green) !important;
+      fill: oklch(0.16 0.04 140) !important;
+    }
+    .mermaid .node.loop-node rect, .mermaid .node.loop-node path, .mermaid .node.loop-node polygon {
+      stroke: #f57c00 !important;
+      fill: oklch(0.16 0.04 40) !important;
+    }
+    .mermaid .node.client-node rect, .mermaid .node.client-node path, .mermaid .node.client-node polygon {
+      stroke: #7b1fa2 !important;
+      fill: oklch(0.16 0.04 300) !important;
+    }
+    .math-block {
+      background: var(--surface);
+      border-left: 4px solid var(--green);
+      padding: 16px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 20px 0;
+      font-family: monospace;
+      color: var(--text);
+    }
+    .card-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+      margin-top: 24px;
+    }
+    @media (min-width: 768px) {
+      .research-hero h1 {
+        font-size: 3.5rem;
+      }
+      .card-list {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    .research-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      transition: border-color 200ms ease;
+    }
+    .research-card:hover {
+      border-color: var(--green);
+    }
+    .research-card h3 {
+      margin-top: 0;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container nav-shell">
+      <a class="brand" href="/airo/#top" aria-label="Airo home">
+        <img src="/airo/assets/airo-tv/airo-icon.svg" alt="">
+        <span>Airo <small>Modular superapp</small></span>
+      </a>
+      <button class="menu-button" type="button" aria-label="Open navigation" aria-controls="site-navigation" aria-expanded="false" data-menu-button>
+        <i data-lucide="menu" aria-hidden="true"></i>
+      </button>
+      <nav class="site-nav" id="site-navigation" aria-label="Primary navigation" data-navigation>
+        <a href="/airo/#top">Airo</a>
+        <a href="/airo/#difference">Aika Stream</a>
+        <a href="/airo/#vevo-showcase">Live demos</a>
+        <a href="/airo/#pro-vision">Aika Stream Pro</a>
+        <a href="/airo/iptv-research/" aria-current="location">IPTV Tech</a>
+        <a href="/airo/#devices">Devices</a>
+        <a href="/airo/#guides">Guides</a>
+        <a class="button button-primary" href="https://github.com/DevelopersCoffee/airo/releases">
+          <i data-lucide="download" aria-hidden="true"></i> Download
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="research-hero">
+      <div class="container">
+        <p class="eyebrow">Technical and Economic Assessment</p>
+        <h1>IPTV Technology &<br>Architecture Research</h1>
+        <p class="lede" style="color: var(--muted); font-size: 1.15rem; max-width: 800px; margin-top: 16px;">
+          A synthesized look at modern IPTV frameworks, multicast streaming protocols, advanced compression standards, and the value proposition of Aika Stream.
+        </p>
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="container">
+        <div class="prose-section">
+          <h2>1. IPTV Core Fundamentals & Managed Network Delivery</h2>
+          <p>
+            Internet Protocol Television (IPTV) relies on private, managed network infrastructure to deliver high-quality media streams with strict Quality of Service (QoS) guarantees. By utilizing controlled IP topologies, IPTV operators eliminate routing unpredictability and network-level packet bottlenecks.
+          </p>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Architectural Parameter</th>
+                  <th scope="col">Managed IPTV Specification</th>
+                  <th scope="col">Technical Implementation Mechanism</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Network Topology</strong></td>
+                  <td>Closed, private managed IP network (Operator-owned)</td>
+                  <td>Traffic is isolated from the public internet using private MPLS paths and dedicated VLANs.</td>
+                </tr>
+                <tr>
+                  <td><strong>Transmission Methods</strong></td>
+                  <td>True Multicast (IGMP) and Session Unicast (RTSP/UDP)</td>
+                  <td>IGMP Group Management duplicates streams at edge routers; RTSP controls unicast VoD playback states.</td>
+                </tr>
+                <tr>
+                  <td><strong>Bandwidth Allocation</strong></td>
+                  <td>Dedicated, guaranteed bandwidth slices</td>
+                  <td>Resource Reservation Protocol (RSVP) and Admission Control prevent stream starvation.</td>
+                </tr>
+                <tr>
+                  <td><strong>Quality of Service (QoS)</strong></td>
+                  <td>Guaranteed QoS and traffic prioritization</td>
+                  <td>Differentiated Services (DiffServ) flags video packets with high IP precedence (DSCP values).</td>
+                </tr>
+                <tr>
+                  <td><strong>Content Security</strong></td>
+                  <td>Network-level encryption and hardware-secured DRM</td>
+                  <td>Conditional Access Systems (CAS) encrypt video payloads at the scrambler level.</td>
+                </tr>
+                <tr>
+                  <td><strong>Latency & Jitter Control</strong></td>
+                  <td>Minimal, highly predictable propagation delay</td>
+                  <td>Dedicated hardware queues and FEC (Forward Error Correction) rebuild lost UDP packets on-the-fly.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="prose-section">
+          <h2>2. IPTV Network Architecture</h2>
+          <p>
+            An enterprise IPTV framework leverages a layered, three-tier architecture to securely ingest, transcode, distribute, and display high-definition media streams.
+          </p>
+          
+          <figure aria-labelledby="architecture-diagram-caption" style="margin: 0;">
+            <div class="mermaid" aria-hidden="true">
+graph LR
+    %% Subgraph 1: Control & Middleware
+    subgraph Control [Middleware & Subscriber Management]
+        DB[("👤 Subscriber DB & AAA")]
+        MW(["🖥️ IPTV Middleware Services"])
+        ADS(["🎯 Ad Decision Server - ADS"])
+        DB --- MW
+        MW --- ADS
+    end
+
+    %% Subgraph 2: Ingestion & Headend
+    subgraph Headend [1. Ingest & Super Headend - SHE]
+        Feeds(["📡 Satellite & Fiber Feeds"]) --> Trans(["⚙️ Transcoder & Compressor"])
+        VoD(["💽 VoD Server Assets"]) --> Trans
+        Trans --> Scrambler(["🔒 CA Scrambler & Encryptor"])
+        MW -->|Service API| Trans
+        MW -->|DRM Key Rotation| Scrambler
+    end
+
+    %% Subgraph 3: Core & Distribution Network
+    subgraph CoreNet [2. Core & Metro Distribution]
+        Scrambler --> Core(["🌐 IP/MPLS Core Backbone"])
+        Core --> VSO(["🏢 Video Serving Office - VSO"])
+        VSO --> Multicast(["🔀 IGMP Multicast Routers"])
+        VSO --> VoDEdge(["💿 Regional VOD & MW Cache"])
+    end
+
+    %% Subgraph 4: Last-Mile Access
+    subgraph LastMile [3. Last-Mile & Edge Access]
+        Multicast --> DSLAM(["⚡ DSLAM / 5G Edge - MEC"])
+        VoDEdge --> DSLAM
+        DSLAM --> Loop(["〰️ Digital Subscriber Line / 5G Air"])
+    end
+
+    %% Subgraph 5: End-User Premise
+    subgraph Client [4. Client Premise & Playback]
+        Loop --> Gateway(["🏠 Home Gateway & Modem"])
+        Gateway --> STB(["📺 Set-Top Box / Smart TV"])
+        STB --> Decrypt(["🗝️ DRM Decryption Client"])
+        Decrypt --> Player(["🎬 Video Player & 10-Foot UI"])
+    end
+
+    %% Connect Middleware to client
+    MW -->|User Authentication| STB
+
+    %% CSS class assignments
+    class DB,MW,ADS control-node;
+    class Feeds,VoD,Trans,Scrambler headend-node;
+    class Core,VSO,Multicast,VoDEdge core-node;
+    class DSLAM,Loop loop-node;
+    class Gateway,STB,Decrypt,Player client-node;
+            </div>
+            <figcaption id="architecture-diagram-caption" class="sr-only">
+              IPTV Network Architecture Diagram showing: Ingestion of live satellite/fiber feeds and VoD assets, transcoding, scrambler CA encryption, control via subscriber DB and Middleware services, distribution via IP/MPLS core and Video Serving Offices, edge access via 5G/MEC/DSLAM, and client playback at home gateways, set-top boxes, and video players.
+            </figcaption>
+          </figure>
+
+
+          <h3>Key Architectural Nodes</h3>
+          <ul>
+            <li><strong>Super Head End (SHE):</strong> Acts as the central injection point. The SHE gathers video feeds from various content providers (via satellite, fiber, or local storage), transcodes them, injects EPG data, and interfaces with ad decision servers.</li>
+            <li><strong>Video Servicing Office (VSO):</strong> Distributes media locally, providing regional caching and EPG indexing, which relieves backbone bandwidth and speeds up playback start times.</li>
+            <li><strong>Mobile Edge Computing (MEC):</strong> Integrates streaming caches inside 5G base stations, allowing ultra-low latency playback and localized dynamic ad stitching.</li>
+          </ul>
+        </div>
+
+        <div class="prose-section">
+          <h2>3. Core Protocols & Multicast Mechanisms</h2>
+          <p>
+            IPTV networks achieve high packet-routing efficiency through multicast delivery, saving enormous amounts of core network bandwidth.
+          </p>
+          <h3>True Multicast via IGMP</h3>
+          <p>
+            Using the **Internet Group Management Protocol (IGMP)**, the network dynamically creates a shared distribution tree. A single stream is duplicated inside network routers near the viewers instead of transmitting separate streams from the origin server (Unicast).
+          </p>
+          <p>
+            For \(N\) subscribers watching a stream of bitrate \(B\), the bandwidth savings are:
+          </p>
+          <div class="math-block">
+            Unicast Bandwidth: W_unicast = N * B<br>
+            Multicast Bandwidth: W_multicast ≈ B
+          </div>
+          <p>
+            This holds core trunk bandwidth constant, protecting the network infrastructure from collapsing during highly concurrent events like live sports.
+          </p>
+          <h3>Transport and Session Control</h3>
+          <ul>
+            <li><strong>RTP over UDP:</strong> UDP is utilized instead of TCP to eliminate latency-inducing retransmission loops. Packets are ordered and monitored using RTP, while losses are repaired via Forward Error Correction (FEC).</li>
+            <li><strong>RTSP:</strong> Manages session controls for Video-on-Demand (VOD), translating client actions (Play, Pause, Seek) into instantaneous playback status adjustments.</li>
+          </ul>
+        </div>
+
+        <div class="prose-section">
+          <h2>4. Advanced Video Compression & Bitrate Adaptation</h2>
+          <p>
+            Delivering 4K UHD content across varied devices (iPads, smartphones, Smart TVs) requires modern codec standards and stream segmentation.
+          </p>
+          <h3>Codec Standards</h3>
+          <ul>
+            <li><strong>H.265 (HEVC):</strong> Offers a 50% bandwidth reduction over standard H.264 (AVC) for equivalent video quality, serving as the baseline for UHD streaming.</li>
+            <li><strong>AV1:</strong> Open-source and royalty-free, providing an additional 30% compression efficiency over HEVC.</li>
+            <li><strong>VVC (Versatile Video Coding):</strong> Next-generation standard targeting 8K and HDR formats at extremely low bitrates.</li>
+          </ul>
+          <h3>Scalable Video Coding (SVC) & ABR</h3>
+          <p>
+            **Scalable Video Coding (SVC)** encodes a stream with a base layer (minimum resolution/framerate) and enhancement layers (spatial resolution, framerate, SNR). In tandem with **Adaptive Bitrate Streaming (ABR)** protocols (HLS/DASH), the client dynamically monitors its buffer health and available bandwidth, adjusting segment requests to prevent freezing.
+          </p>
+        </div>
+
+        <div class="prose-section">
+          <h2>5. Server-Side Ad Insertion (SSAI) & SCTE-35 Workflows</h2>
+          <p>
+            Traditional Client-Side Ad Insertion (CSAI) pauses playback to query ad networks, which results in buffering, black screens, and vulnerability to ad blockers. Aika Stream's architecture supports **Server-Side Ad Insertion (SSAI)**, where advertisements are stitched directly into the primary video stream manifest at the network level.
+          </p>
+
+          <figure aria-labelledby="ssai-sequence-caption" style="margin: 0;">
+            <div class="mermaid" aria-hidden="true">
+sequenceDiagram
+    autonumber
+    participant Source as Video Source / Encoder
+    participant SSAI as Manifest Manipulator (SSAI)
+    participant ADS as Ad Decision Server (ADS)
+    participant Client as End-User Video Player
+
+    Source->>SSAI: Stream + SCTE-35 Splice Marker (Cue-Out)
+    Note over SSAI: Detects Splice Command
+    SSAI->>ADS: VAST/VMAP Request (User Profile & Ad Duration)
+    ADS-->>SSAI: Return Selected Ad Pointers (VAST XML)
+    Note over SSAI: Transcode & Align Ad Bitrate Ladder
+    SSAI->>Client: Deliver Unified Manifest (.m3u8 / .mpd) with stitched Ad
+    Note over Client: Frame-accurate, buffer-free playback
+            </div>
+            <figcaption id="ssai-sequence-caption" class="sr-only">
+              SSAI Sequence Diagram showing the 6-step workflow: Video Source sends SCTE-35 Cue-Out to Manifest Manipulator, which detects the command, requests ads from the Ad Decision Server using VAST/VMAP, receives selected ad pointers, transcodes/aligns the ad bitrate ladder, and delivers a unified manifest to the Client Video Player for buffer-free playback.
+            </figcaption>
+          </figure>
+
+
+          <h3>The SSAI Workflow</h3>
+          <p>
+            SCTE-35 markers flag frame-accurate ad-insertion boundaries. The manifest manipulator receives these cues, queries the Ad Decision Server (ADS) via VAST/VMAP protocols, transcodes the ad matching the stream profile, and stitches it into the user's manifest. This makes ads block-resistant and eliminates playback lag.
+          </p>
+        </div>
+
+        <div class="prose-section">
+          <h2>6. AI/ML Integration in Streaming</h2>
+          <p>
+            Integrating Machine Learning models optimizes streaming quality, personalizes discovery, and coordinates ads dynamically.
+          </p>
+          <div class="card-list">
+            <div class="research-card">
+              <h3>Hyper-Personalized Discovery</h3>
+              <p>NLP models and Computer Vision tag video files with deep semantic labels (scene sentiment, objects, dialogue), driving a recommendation engine that matches user viewing habits.</p>
+            </div>
+            <div class="research-card">
+              <h3>Predictive Quality of Service</h3>
+              <p>On-device AI monitors network signals and predicts bandwidth drops before they trigger buffering, allowing smooth, proactive bitrate transitions.</p>
+            </div>
+            <div class="research-card">
+              <h3>Contextual Ad Intelligence</h3>
+              <p>Analyzes real-time scene sentiment to deliver highly relevant context-targeted ads (e.g., sporting gear during high-action sports broadcasts), improving ad engagement and CPM yields.</p>
+            </div>
+            <div class="research-card">
+              <h3>Content and Operations Security</h3>
+              <p>Combats streaming leakage, account sharing, and digital piracy through dynamic anomaly detection and biometrics, protecting platform bottom-line revenues.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="prose-section">
+          <h2>7. Strategic Business Case: Why Aika Stream is an Investment, Not an Expense</h2>
+          <p>
+            Subscription fatigue and subscription sprawl (maintaining dozens of distinct, rising SVOD bills) turn digital streaming into a growing liability. Reconfiguring your streaming setup around a high-performance client like Aika Stream or upgrading to the intelligence of Aika Stream Pro is an **infrastructure investment** that pays immediate dividends.
+          </p>
+
+          <div class="card-list">
+            <div class="research-card">
+              <h3>A. Consolidating Subscription Sprawl</h3>
+              <p>Aika Stream operates on a **Bring Your Own Content (BYOC)** model. By providing a single unified player for all authorized M3U/M3U8 playlists, users can aggregate live television, subscription networks, local media servers, and public FAST channels into a single interface. Investing in a single premium player eliminates the need for redundant app packages, delivering a complete return on capital within months.</p>
+            </div>
+            <div class="research-card">
+              <h3>B. Tangible Network & Cellular Data Savings</h3>
+              <p>In mobile-first and bandwidth-constrained markets (such as India, where low-cost cellular data packages are subject to daily bandwidth caps), streaming high-definition video is expensive. Aika Stream’s integration of advanced codecs (HEVC and AV1) and adaptive client processing reduces data consumption by up to **50%** compared to legacy, unoptimized web players. This optimization protects users from overage charges and daily speed throttling, saving money on network data plans.</p>
+            </div>
+            <div class="research-card">
+              <h3>C. Preserving Device Hardware Lifecycle</h3>
+              <p>Client-side tracking, heavy Javascript bundles, and inefficient CSAI video players run hot, consuming massive CPU cycles. Over time, high thermal loads degrade the lithium-ion batteries of smartphones, iPads, and set-top boxes, shortening their usable lifespan. Aika Stream relies on structured local worker processes (running heavy parsing off the main thread) and supports Server-Side Ad Insertion (SSAI). By bypassing heavy client-side ad scripts, the application consumes minimal battery power and runs cooler, preserving user hardware equity.</p>
+            </div>
+            <div class="research-card">
+              <h3>D. Lifetime Equity in a Local-First Platform</h3>
+              <p>Unlike commercial streaming apps where access is instantly revoked the moment a subscription terminates, purchasing the Aika Stream client (or upgrading to Aika Stream Pro features) secures a permanent digital tool. Your playlists, favorites, custom search indexes, and layout configurations are kept local and private. It is a long-term utility that continuously adapts to new open codecs and source formats without forcing you into recurring price hikes.</p>
+            </div>
+          </div>
+          <div class="research-card" style="margin-top: 20px;">
+            <h3>E. Protecting Your Digital Privacy</h3>
+            <p>Commercial streaming platforms generate massive revenue by tracking, packaging, and selling your viewing habits, search history, and geographic data to advertising brokers. Aika Stream enforces a strict local-first privacy boundary. By processing data on-device and eliminating background telemetry tracking, Aika Stream is an investment in your personal data sovereignty. Your viewing profile is never commodified, preserving your digital privacy asset.</p>
+          </div>
+        </div>
+
+        <div class="prose-section">
+          <h2>8. Airo Super-App Platform Composition & Capability Gaps</h2>
+          <p>
+            Airo is engineered as an extensible, multi-capability <strong>super-app platform</strong>. Within this framework, <strong>Aika Stream</strong> is a specialized modular application package designed specifically for 10-foot television environments. A detailed codebase gap analysis across Airo and Airo Pro repositories reveals how features are gated, platform-conditional limitations, settings design differences, and UI alignment targets.
+          </p>
+
+          <h3>8.1 Core Feature Gating Mechanism</h3>
+          <p>
+            Airo gates functional availability at compilation level via <code>app/lib/core/config/platform_features.dart</code>. The codebase partitions logic across four principal target profiles: <code>mobileFull</code>, <code>mobileStreaming</code>, <code>androidTv</code>, and <code>iPad</code>.
+          </p>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Feature Block</th>
+                  <th scope="col">mobileFull (Mobile)</th>
+                  <th scope="col">mobileStreaming</th>
+                  <th scope="col">androidTv (TV)</th>
+                  <th scope="col">iPad</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Finance (Coins / AiroMoney)</strong></td>
+                  <td>✅</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                </tr>
+                <tr>
+                  <td><strong>AI Chat Agent</strong></td>
+                  <td>✅</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                </tr>
+                <tr>
+                  <td><strong>Games (Chess etc.)</strong></td>
+                  <td>✅</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                </tr>
+                <tr>
+                  <td><strong>Reader</strong></td>
+                  <td>✅</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                  <td>✅</td>
+                </tr>
+                <tr>
+                  <td><strong>OCR</strong></td>
+                  <td>✅</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                  <td>❌</td>
+                </tr>
+                <tr>
+                  <td><strong>Music</strong></td>
+                  <td>✅</td>
+                  <td>✅</td>
+                  <td>❌</td>
+                  <td>✅</td>
+                </tr>
+                <tr>
+                  <td><strong>IPTV</strong></td>
+                  <td>✅</td>
+                  <td>✅</td>
+                  <td>✅</td>
+                  <td>✅</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>8.2 Platform-Conditional Capability Gaps</h3>
+          <p>
+            Due to hardware dependencies, platform API limits, and pending storage backends, several capabilities remain conditional or restricted to certain runtime targets:
+          </p>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Feature / Service Slice</th>
+                  <th scope="col">Working Platforms</th>
+                  <th scope="col">Missing / Restricted Platforms</th>
+                  <th scope="col">Codebase Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>On-Device AI (Gemini Nano)</strong></td>
+                  <td>Android</td>
+                  <td>iOS, Web, macOS, Windows, Linux</td>
+                  <td><code>gemini_nano_service.dart:20,35,246</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Stockfish Chess Engine</strong></td>
+                  <td>Android, Desktop</td>
+                  <td>iOS (Stub engine fallback due to NNUE bug)</td>
+                  <td><code>chess_engine_factory_native.dart:12-21</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Chromecast Sender Controls</strong></td>
+                  <td>Android, iOS</td>
+                  <td>macOS, Windows, Linux, Web</td>
+                  <td><code>flutter_chrome_cast_controller.dart:561</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Native Fullscreen Windowing</strong></td>
+                  <td>macOS</td>
+                  <td>Windows, Linux, Web, Mobile</td>
+                  <td><code>native_fullscreen.dart:39</code></td>
+                </tr>
+                <tr>
+                  <td><strong>In-App Auto-Update Checks</strong></td>
+                  <td>macOS</td>
+                  <td>All other platforms</td>
+                  <td><code>airo_macos_update_service.dart:46-56</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Coins "Groups" (Expense Splitting)</strong></td>
+                  <td>Non-Web Platforms</td>
+                  <td>Web</td>
+                  <td><code>coins_platform_support.dart:6</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Coins Budgets</strong></td>
+                  <td>Mobile, Desktop</td>
+                  <td>Web ("Storage Backend Pending")</td>
+                  <td><code>budget_management_screen.dart:28-124</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Contacts Sync (Bill Splitting)</strong></td>
+                  <td>Non-Web Platforms</td>
+                  <td>Web (Fakes contact provider data stub)</td>
+                  <td><code>contact_service.dart:30-43</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Receipt Camera Capture</strong></td>
+                  <td>Non-Web Platforms</td>
+                  <td>Web</td>
+                  <td><code>add_expense_screen.dart:472-473</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Agent Chat Push Notifications</strong></td>
+                  <td>Android, iOS, macOS</td>
+                  <td>Web, Linux, Windows</td>
+                  <td><code>agent_notification_scheduler.dart:371-448</code></td>
+                </tr>
+                <tr>
+                  <td><strong>XMLTV / M3U Parser</strong></td>
+                  <td>Native (Rust FFI Core)</td>
+                  <td>Web (Dart execution fallback, slower performance)</td>
+                  <td><code>core_native/xmltv.dart</code>, <code>m3u.dart</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>8.3 Settings Screen Fragmentation</h3>
+          <p>
+            Platform settings are handled by completely separate implementations rather than a shared UI core:
+          </p>
+          <ul>
+            <li><strong>Mobile Settings Hub (<code>settings_hub_screen.dart</code>):</strong> Configures Bedtime mode, background audio, audio ducking, currencies, playlists, and full AI preferences/model management screens (<code>ai_models_screen.dart</code>, <code>ai_preferences_settings.dart</code>).</li>
+            <li><strong>TV Settings Screen (<code>tv_settings_screen.dart</code>):</strong> Tailored to 10-foot D-pad layout. Restricts config to themes, playback, sources, and a dedicated <strong>Accessibility</strong> section (absent on mobile). In Airo Pro, the TV settings layer is gutted to legal TMDB attribution screens only.</li>
+            <li><strong>Apple TV / tvOS Support:</strong> Explicitly marked as <strong>Blocked</strong> (not built or supported) in <code>docs/features/airo-tv/CROSS_PLATFORM_VALIDATION_MATRIX.md</code>.</li>
+          </ul>
+
+          <h3>8.4 IPTV-Specific Feature Gaps (TV vs. Mobile/iPad)</h3>
+          <p>
+            Analysis of the IPTV streaming packages highlights specific UI variations and routing bugs between device form factors:
+          </p>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Feature Slice</th>
+                  <th scope="col">Present on</th>
+                  <th scope="col">Absent / Incorrect on</th>
+                  <th scope="col">Technical Evidence / Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Now/Next EPG Display</strong></td>
+                  <td>Mobile & iPad</td>
+                  <td>TV (UI Gap)</td>
+                  <td>Data is ready at <code>iptvNowNextProvider</code> (consumed at <code>channel_list_widget.dart:590</code>). TV cards must be wired to render it.</td>
+                </tr>
+                <tr>
+                  <td><strong>Chromecast Picker</strong></td>
+                  <td>Mobile</td>
+                  <td>TV (Intended)</td>
+                  <td>Implemented at <code>iptv_screen.dart:238-267</code>. Excluded from TV screen targets as TVs act as receiver hubs.</td>
+                </tr>
+                <tr>
+                  <td><strong>Swipe-to-Change Channel</strong></td>
+                  <td>Mobile</td>
+                  <td>TV (Incorrectly Shipped)</td>
+                  <td>Touch swipe listeners at <code>video_player_widget.dart:19,25,317,330</code> run on TV builds. Must gate them out for D-pad remote compliance.</td>
+                </tr>
+                <tr>
+                  <td><strong>Stream Quality Selector</strong></td>
+                  <td>Mobile</td>
+                  <td>TV (UI Gap)</td>
+                  <td>Mobile controls dropdown (<code>iptv_screen.dart:570-621</code>) is missing on TV. Needs adaptation for D-pad interactions.</td>
+                </tr>
+                <tr>
+                  <td><strong>Natural-Language Search</strong></td>
+                  <td>Mobile</td>
+                  <td>TV (UI Gap)</td>
+                  <td>Mobile utilizes <code>edgeIptvAssistantProvider</code>. TV currently falls back to a blocking text field dialog box.</td>
+                </tr>
+                <tr>
+                  <td><strong>D-Pad Remote Focus</strong></td>
+                  <td>TV</td>
+                  <td>Mobile / iPad (None, by design)</td>
+                  <td>Utilizes <code>TvFocusable</code> tree traversal elements to map remote keys.</td>
+                </tr>
+                <tr>
+                  <td><strong>Dedicated iPad Layout</strong></td>
+                  <td>N/A</td>
+                  <td>iPad (UI Gap)</td>
+                  <td>iPad compiles the phone widget hierarchy, switching only on screen width bounds in <code>iptv_screen.dart:485-486</code>. No dedicated <code>iPad</code> branch exists.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>8.5 Unwired & Dead Code in IPTV Modules</h3>
+          <p>
+            Several platform capabilities listed in product manifests remain unreachable or entirely unwired in the current codebase:
+          </p>
+          <ul>
+            <li><strong>Adaptive UI components:</strong> <code>AdaptiveIptvUI</code> and <code>AdaptivePlayerControls</code> are declared in source files but never instantiated by client applications.</li>
+            <li><strong>Voice-Search Overlay:</strong> <code>TvChannelGridWithVoiceSearch</code> is declared in the dead barrel file <code>core/tv/tv.dart</code> but never imported in active execution targets.</li>
+            <li><strong>Orphaned Packages:</strong> <code>platform_favorites</code>, <code>platform_network_discovery</code>, <code>platform_receiver_modes</code>, and <code>platform_playlist_export</code> are compiled but have zero imports across either repository. Features like the Favorites button remain unrendered despite manifest claims.</li>
+            <li><strong>Pro EPG Reminders:</strong> The <code>pro_epg</code> reminder scheduler is declared in Airo Pro but is not imported. The only active Pro feature is EPG CDN overrides, applied globally on both TV and Mobile targets.</li>
+          </ul>
+
+          <h3>8.6 Product Profile Mismatches</h3>
+          <p>
+            The TV configuration profiles (like <code>AiroTvProductProfiles.liteReceiver()</code>) hardcode capability flags globally without dynamically assessing hardware limits (e.g. Fire TV stick vs. premium smart TV). It claims <code>favorites</code> capabilities that do not render. Active features like Recording, Downloads, Multi-View, and Local AI are correctly omitted on TV targets as they are not implemented on any client platform.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/airo/#top"><img src="/airo/assets/airo-tv/airo-icon.svg" alt=""><span>Airo</span></a>
+          <h2>One Airo. Focused ways to use it.</h2>
+          <p>Start with Aika Stream today. Follow Aika Stream Pro as it develops, while every other capability remains part of Airo.</p>
+        </div>
+        <div class="footer-col">
+          <h3>Product</h3>
+          <a href="/airo/#top">Airo</a>
+          <a href="/airo/#difference">Aika Stream</a>
+          <a href="/airo/#pro-vision">Aika Stream Pro</a>
+          <a href="/airo/iptv-research/">IPTV Tech & Arch</a>
+        </div>
+        <div class="footer-col">
+          <h3>Progress</h3>
+          <a href="/airo/#community">Community Voice</a>
+          <a href="/airo/#roadmap">Roadmap</a>
+          <a href="https://github.com/DevelopersCoffee/airo/releases">Releases</a>
+        </div>
+        <div class="footer-col">
+          <h3>Trust</h3>
+          <a href="/airo/#trust">Content boundary</a>
+          <a href="/airo/legal/privacy-policy/">Privacy</a>
+          <a href="mailto:coffee.devloper@gmail.com">Support</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>&copy; <span data-current-year>2026</span> DevelopersCoffee</span>
+        <span>Airo is built in public. Roadmap scope may change as evidence changes.</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Load and Initialize Mermaid.js Natively -->
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+  </script>
+</body>
+</html>

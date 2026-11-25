@@ -1,0 +1,522 @@
+import 'package:core_ui/core_ui.dart';
+import 'package:flutter/material.dart';
+import 'package:platform_channels/platform_channels.dart';
+import 'package:platform_player/platform_player.dart';
+
+import '../../../application/multiview_split_ratio.dart';
+import '../../../application/providers/multiview_provider.dart';
+import 'multiview_two_pane_split.dart';
+
+class MultiviewStage extends StatelessWidget {
+  const MultiviewStage({
+    super.key,
+    required this.sessions,
+    required this.featuredChannelId,
+    required this.onPromote,
+    this.onSwap,
+    this.layout,
+    this.onDismiss,
+    this.onEmptySlotTap,
+    this.splitRatio = MultiviewSplitRatio.fifty,
+    this.onSplitRatioChanged,
+    this.onSplitMixPreview,
+  });
+
+  final List<IptvMultiviewSession> sessions;
+  final String? featuredChannelId;
+  final ValueChanged<String> onPromote;
+  final void Function(String firstId, String secondId)? onSwap;
+
+  /// Preferred mosaic. Ignored when it cannot fit every live session —
+  /// see [resolveMultiviewLayout].
+  final MultiviewLayoutKind? layout;
+
+  /// Removes an active tile from MultiView (by channel/session id). Null
+  /// hides the per-tile dismiss control entirely.
+  final ValueChanged<String>? onDismiss;
+
+  /// Invoked when an empty mosaic slot is selected/tapped — the caller opens
+  /// a channel picker to fill it. Null leaves empty slots inert.
+  final VoidCallback? onEmptySlotTap;
+
+  final MultiviewSplitRatio splitRatio;
+  final ValueChanged<MultiviewSplitRatio>? onSplitRatioChanged;
+  final void Function(double fraction, double extent)? onSplitMixPreview;
+
+  @override
+  Widget build(BuildContext context) {
+    // Materialize the covariant input as the interface type. Callers may pass
+    // a List<SessionSubtype>, whose runtime `firstWhere` otherwise expects an
+    // `orElse` returning that subtype.
+    final activeSessions = List<IptvMultiviewSession>.of(sessions);
+    if (activeSessions.isEmpty) return const SizedBox.shrink();
+    final kind = resolveMultiviewLayout(
+      preferred: layout,
+      sessionCount: activeSessions.length,
+    );
+    Widget cell(int index) {
+      if (index >= activeSessions.length) {
+        return _EmptySlot(index: index, onTap: onEmptySlotTap);
+      }
+      final session = activeSessions[index];
+      if (kind == MultiviewLayoutKind.single) {
+        return _SessionSurface(session: session, featured: true);
+      }
+      return _PromotableSurface(
+        session: session,
+        featured: session.id == featuredChannelId,
+        onPromote: onPromote,
+        onSwap: onSwap,
+        featuredChannelId: featuredChannelId,
+        onDismiss: onDismiss,
+        allowVolumeSlider: !kind.isTwoPane,
+      );
+    }
+
+    return switch (kind) {
+      MultiviewLayoutKind.single => KeyedSubtree(
+        key: const ValueKey('multiview-layout-single'),
+        child: cell(0),
+      ),
+      MultiviewLayoutKind.splitHorizontal => KeyedSubtree(
+        key: const ValueKey('multiview-layout-split'),
+        child: MultiviewTwoPaneSplit(
+          axis: Axis.horizontal,
+          ratio: splitRatio,
+          onSplitRatioChanged: onSplitRatioChanged,
+          onSplitMixPreview: onSplitMixPreview,
+          first: cell(0),
+          second: cell(1),
+        ),
+      ),
+      MultiviewLayoutKind.splitVertical => KeyedSubtree(
+        key: const ValueKey('multiview-layout-split-vertical'),
+        child: MultiviewTwoPaneSplit(
+          axis: Axis.vertical,
+          ratio: splitRatio,
+          onSplitRatioChanged: onSplitRatioChanged,
+          onSplitMixPreview: onSplitMixPreview,
+          first: cell(0),
+          second: cell(1),
+        ),
+      ),
+      MultiviewLayoutKind.tripleTop => Column(
+        key: const ValueKey('multiview-layout-triple-top'),
+        children: [
+          Expanded(child: cell(0)),
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(child: cell(1)),
+                Expanded(child: cell(2)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      MultiviewLayoutKind.tripleBottom => Column(
+        key: const ValueKey('multiview-layout-triple'),
+        children: [
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(child: cell(0)),
+                Expanded(child: cell(1)),
+              ],
+            ),
+          ),
+          Expanded(child: cell(2)),
+        ],
+      ),
+      MultiviewLayoutKind.tripleLeft => Row(
+        key: const ValueKey('multiview-layout-triple-left'),
+        children: [
+          Expanded(flex: 2, child: cell(0)),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(child: cell(1)),
+                Expanded(child: cell(2)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      MultiviewLayoutKind.quad => Column(
+        key: ValueKey('multiview-layout-quad-${activeSessions.length}'),
+        children: [
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(child: cell(0)),
+                Expanded(child: cell(1)),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(child: cell(2)),
+                Expanded(child: cell(3)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      MultiviewLayoutKind.spotlight => Row(
+        key: const ValueKey('multiview-layout-spotlight'),
+        children: [
+          Expanded(flex: 2, child: cell(0)),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(child: cell(1)),
+                Expanded(child: cell(2)),
+                Expanded(child: cell(3)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    };
+  }
+}
+
+class _EmptySlot extends StatelessWidget {
+  const _EmptySlot({required this.index, this.onTap});
+
+  final int index;
+
+  /// Opens a channel picker to fill this slot. Null leaves the slot inert
+  /// (e.g. a caller that doesn't support adding channels this way yet).
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = DecoratedBox(
+      decoration: BoxDecoration(border: Border.all(color: Colors.white24)),
+      child: Center(
+        child: Text(
+          'Empty',
+          style: Theme.of(
+            context,
+          ).textTheme.labelSmall?.copyWith(color: Colors.white54),
+        ),
+      ),
+    );
+    return ColoredBox(
+      key: ValueKey('multiview-empty-slot-$index'),
+      color: Colors.black,
+      child: onTap == null
+          ? content
+          : TvFocusable(
+              semanticLabel: 'Add a channel to this slot',
+              onSelect: onTap,
+              child: content,
+            ),
+    );
+  }
+}
+
+class _PromotableSurface extends StatefulWidget {
+  const _PromotableSurface({
+    required this.session,
+    required this.featured,
+    required this.onPromote,
+    required this.onSwap,
+    required this.featuredChannelId,
+    required this.allowVolumeSlider,
+    this.onDismiss,
+  });
+
+  final IptvMultiviewSession session;
+  final bool featured;
+  final ValueChanged<String> onPromote;
+  final void Function(String firstId, String secondId)? onSwap;
+  final String? featuredChannelId;
+  final bool allowVolumeSlider;
+
+  /// Removes this tile from MultiView. Null hides the dismiss control.
+  final ValueChanged<String>? onDismiss;
+
+  @override
+  State<_PromotableSurface> createState() => _PromotableSurfaceState();
+}
+
+class _PromotableSurfaceState extends State<_PromotableSurface> {
+  // Tracks D-pad/keyboard focus so the dismiss control only occupies the
+  // tile's corner while that tile is actually focused, matching the
+  // "visible on focus" per-tile action convention used elsewhere in this
+  // shell (see _StageAction).
+  bool _isFocused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final session = widget.session;
+    return TvFocusable(
+      key: ValueKey('multiview-promote-${session.id}'),
+      semanticLabel: widget.featured
+          ? '${session.channel.name}, featured'
+          : '${session.channel.name}, muted tile',
+      semanticHint: 'Focus for audio. Press OK to swap. Press Menu for tracks.',
+      onFocus: () {
+        widget.onPromote(session.id);
+        setState(() => _isFocused = true);
+      },
+      onUnfocus: () => setState(() => _isFocused = false),
+      onSelect:
+          widget.featuredChannelId == null ||
+              widget.featured ||
+              widget.onSwap == null
+          ? null
+          : () => widget.onSwap?.call(widget.featuredChannelId!, session.id),
+      onSecondaryAction: () => _showTileControls(
+        context,
+        session,
+        onDismiss: widget.onDismiss,
+        allowVolumeSlider: widget.allowVolumeSlider,
+      ),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => widget.onPromote(session.id),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _SessionSurface(session: session, featured: widget.featured),
+            if (_isFocused && widget.onDismiss != null)
+              Positioned(
+                top: 4,
+                right: 4,
+                child: _DismissTileButton(
+                  key: ValueKey('multiview-dismiss-${session.id}'),
+                  channelName: session.channel.name,
+                  onPressed: () => widget.onDismiss!(session.id),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Per-tile "remove from MultiView" control — styled to match
+/// `_StageAction`'s circular-scrim button in `airo_tv_shell.dart` (a
+/// private widget in that library, so the look is mirrored here rather
+/// than shared).
+class _DismissTileButton extends StatelessWidget {
+  const _DismissTileButton({
+    super.key,
+    required this.channelName,
+    required this.onPressed,
+  });
+
+  final String channelName;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = 'Remove $channelName from multiview';
+    return TvFocusable(
+      semanticLabel: label,
+      onSelect: onPressed,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.56),
+        shape: const CircleBorder(),
+        child: IconButton(
+          tooltip: label,
+          onPressed: onPressed,
+          iconSize: 16,
+          padding: const EdgeInsets.all(4),
+          constraints: const BoxConstraints(),
+          icon: const Icon(Icons.close, color: Colors.white),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _showTileControls(
+  BuildContext context,
+  IptvMultiviewSession session, {
+  ValueChanged<String>? onDismiss,
+  bool allowVolumeSlider = true,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (context) => StreamBuilder<StreamingState>(
+      stream: session.states,
+      initialData: session.currentState,
+      builder: (context, snapshot) {
+        final state = snapshot.data ?? session.currentState;
+        final audioTracks = state.tracks.where(
+          (track) => track.kind == AiroPlaybackTrackKind.audio,
+        );
+        final subtitleTracks = state.tracks.where(
+          (track) => track.kind == AiroPlaybackTrackKind.subtitle,
+        );
+        return SimpleDialog(
+          key: ValueKey('multiview-controls-${session.id}'),
+          title: Text('${session.channel.name} controls'),
+          children: [
+            if (allowVolumeSlider) ...[
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 4, 24, 4),
+                child: Text('Volume'),
+              ),
+              // Sets this tile's volume directly, independent of which tile
+              // the pool currently treats as "featured" -- lets a viewer mix
+              // in a second stream's audio at a partial level instead of the
+              // pool's default one-audible-tile-at-a-time routing. The next
+              // promote/add/remove resets every tile back to that default,
+              // overwriting this (see AiroMultiviewSession's doc comment).
+              // Two-pane hides this fader: the split handle drives the mix.
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  children: [
+                    Icon(
+                      state.volume <= 0 ? Icons.volume_off : Icons.volume_up,
+                      size: 20,
+                    ),
+                    Expanded(
+                      child: Slider(
+                        key: ValueKey('multiview-volume-${session.id}'),
+                        value: state.volume.clamp(0.0, 1.0),
+                        onChanged: (value) => session.setVolume(value),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 4, 24, 4),
+              child: Text('Audio track'),
+            ),
+            for (final track in audioTracks)
+              SimpleDialogOption(
+                key: ValueKey('multiview-audio-${session.id}-${track.id}'),
+                onPressed: () => session.selectTrack(
+                  kind: AiroPlaybackTrackKind.audio,
+                  trackId: track.id,
+                ),
+                child: Text(track.label),
+              ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 12, 24, 4),
+              child: Text('Subtitles'),
+            ),
+            SimpleDialogOption(
+              key: ValueKey('multiview-subtitle-off-${session.id}'),
+              onPressed: () =>
+                  session.clearTrackSelection(AiroPlaybackTrackKind.subtitle),
+              child: const Text('Off'),
+            ),
+            for (final track in subtitleTracks)
+              SimpleDialogOption(
+                key: ValueKey('multiview-subtitle-${session.id}-${track.id}'),
+                onPressed: () => session.selectTrack(
+                  kind: AiroPlaybackTrackKind.subtitle,
+                  trackId: track.id,
+                ),
+                child: Text(track.label),
+              ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 12, 24, 4),
+              child: Text('Quality / bitrate'),
+            ),
+            for (final quality in VideoQuality.values)
+              SimpleDialogOption(
+                key: ValueKey(
+                  'multiview-quality-${session.id}-${quality.name}',
+                ),
+                onPressed: () => session.setQuality(quality),
+                child: Text(quality.name),
+              ),
+            if (onDismiss != null) ...[
+              const Divider(height: 24),
+              SimpleDialogOption(
+                key: ValueKey('multiview-remove-${session.id}'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  onDismiss(session.id);
+                },
+                child: Text(
+                  'Remove from MultiView',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class _SessionSurface extends StatelessWidget {
+  const _SessionSurface({required this.session, required this.featured});
+
+  final IptvMultiviewSession session;
+  final bool featured;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder(
+      stream: session.states,
+      initialData: session.currentState,
+      builder: (context, _) {
+        final player = session.buildView();
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            border: Border.all(
+              color: featured
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white24,
+              width: featured ? 2 : 1,
+            ),
+          ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              player ??
+                  const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              Positioned(
+                left: 8,
+                bottom: 6,
+                right: 8,
+                child: Row(
+                  children: [
+                    Icon(
+                      featured ? Icons.volume_up : Icons.volume_off,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        session.channel.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Colors.white,
+                          shadows: const [
+                            Shadow(color: Colors.black, blurRadius: 4),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

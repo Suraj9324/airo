@@ -1,0 +1,163 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../application/providers/iptv_providers.dart';
+import '../widgets/favorite_reimport_review_banner.dart';
+import '../widgets/favorites_backup_menu.dart';
+import '../widgets/iptv_icon_placeholder.dart';
+import '../widgets/channel_load_error_view.dart';
+
+/// Mobile screen listing the user's favorited channels — the mobile
+/// counterpart to [TvFavoritesScreen], with a tap-to-unfavorite trailing
+/// icon replacing TV's D-pad secondary action. See CV item 4 / issue #826.
+class MobileFavoritesScreen extends ConsumerWidget {
+  const MobileFavoritesScreen({
+    required this.onChannelSelected,
+    this.showAppBar = true,
+    super.key,
+  });
+
+  /// Invoked after a favorited channel starts playing, so the caller can
+  /// pop back to the now-playing screen (matches [IptvGuideScreen]'s
+  /// `onChannelSelected` pattern).
+  final VoidCallback onChannelSelected;
+
+  /// False when this screen is embedded as a phone explorer tab, so the
+  /// host scaffold's app bar stays the only chrome.
+  final bool showAppBar;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final favoritesAsync = ref.watch(favoriteChannelsProvider);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final body = Column(
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: FavoriteReimportReviewBanner(),
+        ),
+        Expanded(
+          child: favoritesAsync.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (error, _) => ChannelLoadErrorView(
+              message: 'Could not load favorites: $error',
+              onRetry: () {
+                // Favorites can fail on its own stored list as well as on
+                // the channels it resolves against, so invalidate both.
+                invalidateChannelLibraries(ref);
+                ref.invalidate(favoriteChannelsProvider);
+              },
+            ),
+            data: (channels) {
+              if (channels.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.star_border,
+                        size: 64,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No favorite channels yet',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: channels.length,
+                separatorBuilder: (context, index) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final channel = channels[index];
+
+                  return Semantics(
+                    button: true,
+                    label: 'Play ${channel.name}, ${channel.group}',
+                    child: ListTile(
+                      leading: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: IptvIconPlaceholder.channel(
+                            isAudioOnly: channel.isAudioOnly,
+                          ),
+                        ),
+                      ),
+                      title: Text(
+                        channel.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        channel.group,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: Semantics(
+                        button: true,
+                        toggled: true,
+                        label: 'Remove ${channel.name} from favorites',
+                        excludeSemantics: true,
+                        child: IconButton(
+                          icon: Icon(Icons.favorite, color: colorScheme.error),
+                          tooltip: 'Remove ${channel.name} from favorites',
+                          onPressed: () => ref.read(
+                            channelFavoriteTogglerProvider,
+                          )(channel.id),
+                        ),
+                      ),
+                      onTap: () {
+                        ref
+                            .read(iptvStreamingServiceProvider)
+                            .playChannel(channel);
+                        onChannelSelected();
+                      },
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+
+    if (!showAppBar) {
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Favorites',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                const FavoritesBackupMenu(),
+              ],
+            ),
+          ),
+          Expanded(child: body),
+        ],
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Favorites'),
+        actions: const [FavoritesBackupMenu()],
+      ),
+      body: body,
+    );
+  }
+}

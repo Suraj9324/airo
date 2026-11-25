@@ -1,0 +1,737 @@
+import 'dart:async';
+
+import 'package:airo_app/core/app/tv_router.dart';
+import 'package:airo_app/core/platform/device_form_factor.dart';
+import 'package:core_ui/core_ui.dart';
+import 'package:feature_iptv/application/providers/tv_playlist_pairing_provider.dart';
+import 'package:feature_iptv/application/services/tv_playlist_pairing_server.dart';
+import 'package:feature_iptv/feature_iptv.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  Future<void> pumpTvRouter(
+    WidgetTester tester, {
+    required String initialLocation,
+    Size? surfaceSize,
+    List<IPTVChannel> channels = const [],
+  }) async {
+    if (surfaceSize != null) {
+      await tester.binding.setSurfaceSize(surfaceSize);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+    }
+
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final router = TvRouter.createRouter(initialLocation: initialLocation);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          iptvChannelsProvider.overrideWith((ref) async => channels),
+          recentlyWatchedChannelsProvider.overrideWith((ref) async => const []),
+          tvPlaylistPairingServerFactoryProvider.overrideWithValue(
+            () => _FakePairingServer(never: true),
+          ),
+          streamingStateProvider.overrideWith(
+            (ref) => Stream.value(
+              StreamingState(
+                playbackState: PlaybackState.idle,
+                isLiveStream: true,
+              ),
+            ),
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('starts on live TV without requiring login', (tester) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.live,
+      surfaceSize: const Size(1280, 720),
+    );
+
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.text('Welcome to Airo'), findsNothing);
+  });
+
+  testWidgets('shared channel app link opens the confirmation screen', (
+    tester,
+  ) async {
+    final uri = IptvDeepLinkIntent(
+      channelId: 'shared-9xm',
+      channelName: '9XM',
+      streamUrl: Uri.parse('https://9xjio.wiseplayout.com/9XM/master.m3u8'),
+    ).toUri();
+
+    await pumpTvRouter(
+      tester,
+      initialLocation: Uri(
+        path: uri.path,
+        queryParameters: uri.queryParameters,
+      ).toString(),
+      surfaceSize: const Size(1280, 720),
+    );
+
+    expect(find.text('A friend shared 9XM'), findsOneWidget);
+    expect(find.text('Save & play'), findsOneWidget);
+    expect(find.text('Play once'), findsOneWidget);
+  });
+
+  testWidgets(
+    '1920x1080 Fire TV empty playlist content clears the navigation rail',
+    (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+      addTearDown(DeviceFormFactorDetector.clearCache);
+
+      await pumpTvRouter(tester, initialLocation: TvRouteNames.live);
+
+      final railRect = tester.getRect(find.byKey(const Key('tv-sidebar-nav')));
+      final headingRect = tester.getRect(find.text('Add your playlist'));
+      final copyRect = tester.getRect(
+        find.textContaining(
+          'does not provide channels, playlists, or program guide data',
+        ),
+      );
+      final buttonRect = tester.getRect(find.text('Add playlist URL'));
+
+      for (final contentRect in [headingRect, copyRect, buttonRect]) {
+        expect(
+          contentRect.left,
+          greaterThanOrEqualTo(railRect.right),
+          reason: '$contentRect must not intersect $railRect',
+        );
+      }
+
+      final addButton = find.byKey(const ValueKey('iptv-empty-add-playlist'));
+      final buttonFocus = tester.widget<Focus>(
+        find.descendant(of: addButton, matching: find.byType(Focus)).first,
+      );
+      buttonFocus.focusNode!.requestFocus();
+      await tester.pump(TvFocusConstants.focusAnimationDuration);
+      expect(buttonFocus.focusNode?.hasPrimaryFocus, isTrue);
+      expect(
+        tester
+            .widgetList<DecoratedBox>(
+              find.descendant(
+                of: addButton,
+                matching: find.byType(DecoratedBox),
+              ),
+            )
+            .where(
+              (box) =>
+                  box.decoration is BoxDecoration &&
+                  (box.decoration as BoxDecoration).border?.top.width ==
+                      TvFocusConstants.focusBorderWidth,
+            ),
+        isNotEmpty,
+        reason: 'the focused Add playlist action must paint the TV focus ring',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    '1920x1080 Fire TV loaded playlist grid clears the navigation rail',
+    (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+      addTearDown(DeviceFormFactorDetector.clearCache);
+
+      await pumpTvRouter(
+        tester,
+        initialLocation: TvRouteNames.live,
+        channels: const [
+          IPTVChannel(
+            id: 'vevo-pop',
+            name: 'Vevo Pop',
+            streamUrl: 'https://example.com/vevo-pop.m3u8',
+          ),
+        ],
+      );
+
+      final railRect = tester.getRect(find.byKey(const Key('tv-sidebar-nav')));
+      final gridRect = tester.getRect(
+        find.byKey(const ValueKey('airo-tv-channel-library')),
+      );
+      expect(
+        gridRect.left,
+        greaterThanOrEqualTo(railRect.right),
+        reason: '$gridRect must not intersect $railRect',
+      );
+      expect(
+        find.byKey(const ValueKey('airo-tv-explorer-video-stage')),
+        findsNothing,
+      );
+      expect(find.text('Select a channel to start watching'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'LEFT from Search, Sort, and the first channel enters the TV rail',
+    (tester) async {
+      DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+      addTearDown(DeviceFormFactorDetector.clearCache);
+
+      await pumpTvRouter(
+        tester,
+        initialLocation: TvRouteNames.live,
+        surfaceSize: const Size(960, 540),
+        channels: const [
+          IPTVChannel(
+            id: 'news',
+            name: 'News',
+            streamUrl: 'https://example.com/news.m3u8',
+          ),
+        ],
+      );
+
+      // Sort is not a leading-edge control in the centered explorer panel
+      // (x≈520); LEFT from it is a no-op. Search and the first channel are
+      // the leftmost D-pad stops the rail bridge must honor.
+      final leadingControls = <String, Finder>{
+        'Search': find.byKey(const ValueKey('filter-chip-search')),
+        'first channel': find.byKey(const ValueKey('channel-tile-news')),
+      };
+
+      for (final entry in leadingControls.entries) {
+        final focus = tester
+            .widgetList<Focus>(
+              find.descendant(of: entry.value, matching: find.byType(Focus)),
+            )
+            .firstWhere((candidate) => candidate.focusNode != null);
+        focus.focusNode!.requestFocus();
+        await tester.pump();
+        expect(
+          focus.focusNode!.hasPrimaryFocus,
+          isTrue,
+          reason: '${entry.key} must own focus before pressing LEFT',
+        );
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+
+        final primary = FocusManager.instance.primaryFocus;
+        expect(primary, isNotNull);
+        final renderObject = primary!.context!.findRenderObject()! as RenderBox;
+        final primaryRect =
+            renderObject.localToGlobal(Offset.zero) & renderObject.size;
+        final focusedRail = tester.getRect(
+          find.byKey(const Key('tv-sidebar-nav')),
+        );
+        expect(
+          primaryRect.center.dx,
+          lessThan(focusedRail.right),
+          reason: 'LEFT from ${entry.key} must enter the rail',
+        );
+      }
+    },
+  );
+
+  testWidgets('uses compact IPTV layout on phone portrait viewports', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.live,
+      surfaceSize: const Size(390, 844),
+    );
+
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.text('Live TV'), findsNothing);
+    expect(find.byType(IptvBottomNavBar), findsOneWidget);
+    expect(find.byTooltip('My Aika'), findsOneWidget);
+    await tester.tap(find.byTooltip('My Aika'));
+    await tester.pumpAndSettle();
+    expect(find.text('Play local file on TV'), findsOneWidget);
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Appearance'), findsOneWidget);
+    expect(find.widgetWithText(AppBar, 'Settings'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('uses compact IPTV layout on short phone landscape viewports', (
+    tester,
+  ) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.live,
+      surfaceSize: const Size(1090, 485),
+    );
+
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.text('Live TV'), findsNothing);
+    expect(find.byType(IptvBottomNavBar), findsOneWidget);
+    expect(find.byTooltip('My Aika'), findsOneWidget);
+    await tester.tap(find.byTooltip('My Aika'));
+    await tester.pumpAndSettle();
+    expect(find.text('Settings'), findsOneWidget);
+  });
+
+  testWidgets(
+    'detected TV keeps the 10-foot layout even at phone-sized logical '
+    'viewports (Fire TV Stick reports 960x540 logical at density 2.0)',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+      addTearDown(DeviceFormFactorDetector.clearCache);
+
+      await pumpTvRouter(
+        tester,
+        initialLocation: TvRouteNames.live,
+        surfaceSize: const Size(960, 540),
+      );
+
+      // Phone chrome must not leak onto a real TV: no bottom nav and
+      // no Cast entry point (the TV is the receiver, not a sender).
+      expect(find.byType(IptvBottomNavBar), findsNothing);
+      expect(find.byIcon(Icons.cast_connected), findsNothing);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets(
+    'phone-sized viewport without TV detection still gets compact layout',
+    (tester) async {
+      DeviceFormFactorDetector.clearCache();
+      addTearDown(DeviceFormFactorDetector.clearCache);
+
+      await pumpTvRouter(
+        tester,
+        initialLocation: TvRouteNames.live,
+        surfaceSize: const Size(390, 844),
+      );
+
+      expect(find.byType(IptvBottomNavBar), findsOneWidget);
+      expect(find.byTooltip('My Aika'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'wide non-TV window keeps the 10-foot layout when not desktop-windowed',
+    (tester) async {
+      DeviceFormFactorDetector.clearCache();
+      addTearDown(DeviceFormFactorDetector.clearCache);
+      // pumpTvRouter's own surfaceSize goes through
+      // tester.binding.setSurfaceSize, which this MaterialApp.router tree
+      // doesn't observe (see the 1920x1080 Fire TV tests above for the
+      // working pattern) -- set the view directly instead.
+      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await pumpTvRouter(tester, initialLocation: TvRouteNames.live);
+
+      expect(find.byType(IptvBottomNavBar), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'wide non-TV window detected as Desktop Windowed gets phone-style '
+    'chrome instead of the 10-foot layout (Android Desktop Windowing on a '
+    'handheld connected to an external monitor)',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      DeviceFormFactorDetector.debugIsDesktopWindowedOverride = true;
+      addTearDown(DeviceFormFactorDetector.clearCache);
+      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await pumpTvRouter(tester, initialLocation: TvRouteNames.live);
+
+      expect(find.byType(IptvBottomNavBar), findsOneWidget);
+      expect(find.byTooltip('My Aika'), findsOneWidget);
+      await tester.tap(find.byTooltip('My Aika'));
+      await tester.pumpAndSettle();
+      expect(find.text('Play local file on TV'), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets(
+    'TV renders the 10-foot AiroTvShell with no phone chrome, and keeps '
+    'playlist source reachable without an app bar',
+    (tester) async {
+      DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+      addTearDown(DeviceFormFactorDetector.clearCache);
+
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      await tester.binding.setSurfaceSize(const Size(960, 540));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            iptvChannelsProvider.overrideWith(
+              (ref) async => const [
+                IPTVChannel(
+                  id: 'ch1',
+                  name: 'Test Channel',
+                  streamUrl: 'https://example.com/ch1.m3u8',
+                ),
+              ],
+            ),
+            recentlyWatchedChannelsProvider.overrideWith(
+              (ref) async => const [],
+            ),
+            tvPlaylistPairingServerFactoryProvider.overrideWithValue(
+              () => _FakePairingServer(never: true),
+            ),
+            streamingStateProvider.overrideWith(
+              (ref) => Stream.value(
+                StreamingState(
+                  playbackState: PlaybackState.idle,
+                  isLiveStream: true,
+                ),
+              ),
+            ),
+          ],
+          child: MaterialApp.router(
+            routerConfig: TvRouter.createRouter(
+              initialLocation: TvRouteNames.live,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The 10-foot shell.
+      expect(
+        find.byKey(const ValueKey('airo-tv-explorer-wide-shell')),
+        findsOneWidget,
+      );
+      // No phone chrome on a television.
+      expect(find.byType(IptvBottomNavBar), findsNothing);
+      expect(find.byIcon(Icons.cast_connected), findsNothing);
+      // Removing the app bar must not strand playlist source — Settings has
+      // no playlist entry, so it lives in the LIVE bar on TV.
+      expect(find.bySemanticsLabel('Playlist source'), findsOneWidget);
+    },
+  );
+
+  testWidgets('sidebar navigation to Guide unmounts the live shell', (
+    tester,
+  ) async {
+    DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+    addTearDown(DeviceFormFactorDetector.clearCache);
+
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.binding.setSurfaceSize(const Size(960, 540));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          iptvChannelsProvider.overrideWith(
+            (ref) async => const [
+              IPTVChannel(
+                id: 'ch1',
+                name: 'Test Channel',
+                streamUrl: 'https://example.com/ch1.m3u8',
+              ),
+            ],
+          ),
+          recentlyWatchedChannelsProvider.overrideWith((ref) async => const []),
+          tvPlaylistPairingServerFactoryProvider.overrideWithValue(
+            () => _FakePairingServer(never: true),
+          ),
+          streamingStateProvider.overrideWith(
+            (ref) => Stream.value(
+              StreamingState(
+                playbackState: PlaybackState.idle,
+                isLiveStream: true,
+              ),
+            ),
+          ),
+        ],
+        child: MaterialApp.router(
+          routerConfig: TvRouter.createRouter(
+            initialLocation: TvRouteNames.live,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('airo-tv-explorer-wide-shell')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('tv-sidebar-nav')),
+        matching: find.byIcon(Icons.grid_view_outlined),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('airo-tv-explorer-wide-shell')),
+      findsNothing,
+    );
+    expect(find.byType(IPTVScreen), findsNothing);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('tv-sidebar-nav')),
+        matching: find.byIcon(Icons.home_outlined),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.byType(IPTVScreen), findsNothing);
+    expect(find.text('Your media. Your player.'), findsNothing);
+    expect(find.text('Live TV'), findsOneWidget);
+    expect(find.text('Test Channel'), findsAtLeastNWidgets(1));
+    expect(find.text('Continue Watching'), findsNothing);
+  });
+
+  testWidgets('10-foot empty Home is QR-primary landing', (tester) async {
+    DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+    addTearDown(DeviceFormFactorDetector.clearCache);
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpTvRouter(tester, initialLocation: TvRouteNames.home);
+
+    expect(find.text('Aika Stream'), findsWidgets);
+    expect(find.text('Your media. Your player.'), findsOneWidget);
+    expect(find.textContaining('same Wi-Fi'), findsOneWidget);
+    expect(find.text('Or enter URL manually'), findsOneWidget);
+    expect(find.byType(IPTVScreen), findsNothing);
+  });
+
+  testWidgets('redirects legacy login route to Home', (tester) async {
+    DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+    addTearDown(DeviceFormFactorDetector.clearCache);
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpTvRouter(tester, initialLocation: TvRouteNames.legacyLogin);
+
+    expect(find.text('Your media. Your player.'), findsOneWidget);
+    expect(find.textContaining('same Wi-Fi'), findsOneWidget);
+    expect(find.byType(IPTVScreen), findsNothing);
+    expect(find.text('Welcome to Airo'), findsNothing);
+  });
+
+  testWidgets('unmatched deep link offers a way back to Home', (tester) async {
+    // The canonical link is registered with android:pathPrefix, so Android
+    // delivers deeper paths under /airo/iptv even though only the exact path
+    // is routable. These used to hit go_router's default error page, which
+    // renders outside TvShell — no rail, and BACK closes the app.
+    DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+    addTearDown(DeviceFormFactorDetector.clearCache);
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpTvRouter(tester, initialLocation: '/airo/iptv/watch/12345');
+    await tester.pumpAndSettle();
+
+    expect(find.text('That link could not be opened'), findsOneWidget);
+
+    await tester.tap(find.text('Go to Home'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('That link could not be opened'), findsNothing);
+    expect(find.text('Your media. Your player.'), findsOneWidget);
+    expect(find.textContaining('same Wi-Fi'), findsOneWidget);
+    expect(find.byType(IPTVScreen), findsNothing);
+  });
+
+  testWidgets('favorites route renders the real favorites screen', (
+    tester,
+  ) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.favorites,
+      surfaceSize: const Size(1280, 720),
+    );
+
+    expect(find.text('Favorites'), findsOneWidget);
+    expect(find.text('Coming soon'), findsNothing);
+    expect(find.text('No favorite channels yet'), findsOneWidget);
+  });
+
+  testWidgets('compact default Home is the IPTV explorer', (tester) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.home,
+      surfaceSize: const Size(390, 844),
+    );
+
+    expect(find.byType(IPTVScreen), findsOneWidget);
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.text('Add playlist URL'), findsOneWidget);
+    expect(find.byType(IptvBottomNavBar), findsOneWidget);
+    expect(find.byTooltip('My Aika'), findsOneWidget);
+    expect(find.text('Your media. Your player.'), findsNothing);
+  });
+
+  testWidgets('compact settings route shows a back button to Home', (
+    tester,
+  ) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.settings,
+      surfaceSize: const Size(390, 844),
+    );
+
+    expect(find.widgetWithText(AppBar, 'Settings'), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.arrow_back));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.byType(IPTVScreen), findsOneWidget);
+    expect(find.text('Your media. Your player.'), findsNothing);
+    expect(find.widgetWithText(AppBar, 'Settings'), findsNothing);
+  });
+
+  testWidgets('compact settings route handles Android back by returning Home', (
+    tester,
+  ) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.settings,
+      surfaceSize: const Size(390, 844),
+    );
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.byType(IPTVScreen), findsOneWidget);
+    expect(find.text('Your media. Your player.'), findsNothing);
+    expect(find.widgetWithText(AppBar, 'Settings'), findsNothing);
+  });
+
+  testWidgets('compact landscape settings Back returns to Home', (
+    tester,
+  ) async {
+    await pumpTvRouter(
+      tester,
+      initialLocation: TvRouteNames.settings,
+      surfaceSize: const Size(1090, 485),
+    );
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add your playlist'), findsOneWidget);
+    expect(find.byType(IPTVScreen), findsOneWidget);
+    expect(find.text('Your media. Your player.'), findsNothing);
+    expect(find.widgetWithText(AppBar, 'Settings'), findsNothing);
+  });
+
+  testWidgets(
+    'compact landscape settings handles Android back by returning Home',
+    (tester) async {
+      await pumpTvRouter(
+        tester,
+        initialLocation: TvRouteNames.settings,
+        surfaceSize: const Size(1090, 485),
+      );
+
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Add your playlist'), findsOneWidget);
+      expect(find.byType(IPTVScreen), findsOneWidget);
+      expect(find.text('Your media. Your player.'), findsNothing);
+      expect(find.widgetWithText(AppBar, 'Settings'), findsNothing);
+    },
+  );
+
+  testWidgets('10-foot settings route renders TV settings screen', (
+    tester,
+  ) async {
+    DeviceFormFactorDetector.debugFormFactorOverride = DeviceFormFactor.tv;
+    addTearDown(DeviceFormFactorDetector.clearCache);
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpTvRouter(tester, initialLocation: TvRouteNames.settings);
+
+    expect(find.text('Theme'), findsOneWidget);
+    expect(find.text('About'), findsOneWidget);
+  });
+}
+
+class _FakePairingServer implements TvPlaylistPairingServer {
+  _FakePairingServer({this.never = false});
+
+  final bool never;
+  final _resultCompleter = Completer<String?>();
+  bool stopped = false;
+
+  @override
+  Future<Uri> start() async {
+    return Uri.parse('http://192.168.1.5:8080/pair/fake-token');
+  }
+
+  @override
+  Future<String?> get result {
+    if (!never && !_resultCompleter.isCompleted) {
+      _resultCompleter.complete(null);
+    }
+    return _resultCompleter.future;
+  }
+
+  @override
+  Future<void> cancel() => stop();
+
+  @override
+  Future<void> stop() async {
+    stopped = true;
+    if (!_resultCompleter.isCompleted) _resultCompleter.complete(null);
+  }
+
+  @override
+  bool get isRunning => !stopped;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}

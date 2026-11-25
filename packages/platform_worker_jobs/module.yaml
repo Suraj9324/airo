@@ -1,0 +1,9 @@
+name: platform_worker_jobs
+owner: Chief Architect
+reviewers:
+  - Chief Performance Officer
+  - Rust Architect
+allowed_dependencies: []
+forbidden_dependencies:
+  - app
+quality_gates: {}

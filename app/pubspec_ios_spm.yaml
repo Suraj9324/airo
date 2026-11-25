@@ -1,0 +1,166 @@
+# iOS simulator/local pubspec.
+# Use this only for local simulator smoke tests where heavy native plugins are
+# stubbed out. The active app pubspec remains pubspec.yaml.
+
+name: airo_app
+description: "Airo - AI-powered super app with Gemini Nano integration"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+  flutter: ">=3.44.4"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Routing & Navigation
+  go_router: ^17.3.0
+
+  # State Management
+  riverpod: 3.4.2
+  flutter_riverpod: 3.4.2
+
+  # Storage & Persistence
+  shared_preferences: ^2.5.5
+  drift: ^2.18.0
+  sqlite3_flutter_libs: ^0.5.41
+  path: 1.9.1
+  path_provider: ^2.1.6
+
+  # Connectivity
+  connectivity_plus: ^7.1.1
+
+  # Networking
+  dio: ^5.10.0
+
+  # Firebase & Authentication
+  firebase_core: 4.4.0
+  firebase_auth: 6.1.4
+  google_sign_in: 7.2.0
+
+  # Audio & Media
+  audio_service: ^0.18.18
+  just_audio: ^0.10.5
+
+  # Utilities
+  intl: 0.20.2
+  uuid: 4.5.2
+
+  # Local packages - Core
+  core_domain:
+    path: ../packages/core_domain
+  core_data:
+    path: ../packages/core_data
+  core_ui:
+    path: ../packages/core_ui
+  core_ai:
+    path: ../packages/core_ai
+  core_auth:
+    path: ../packages/core_auth
+
+  # Local packages - Features
+  airo:
+    path: ../packages/airo
+  feature_coin:
+    path: ../packages/feature_coin
+
+  cupertino_icons: ^1.0.9
+  equatable: ^2.1.0
+  flame: 1.35.0
+  flame_audio: 2.11.13
+  share_plus: ^10.0.0
+  url_launcher: 6.3.2
+  file_picker: 10.3.10
+  pdfx: 2.9.2
+  flutter_local_notifications: 20.1.0
+  timezone: 0.10.1
+  audioplayers: 6.5.1
+  cached_network_image: 3.4.1
+  flutter_tts: 4.2.5
+  chess: 0.8.1
+  stockfish: 1.8.1
+  flutter_contacts: 1.1.9+2
+  permission_handler: 12.0.0+1
+  image_picker: 1.2.1
+  google_mlkit_text_recognition: 0.16.0
+  google_mlkit_image_labeling: 0.15.0
+  video_player: ^2.13.0
+  flutter_chrome_cast: ^1.4.6
+  wakelock_plus: ^1.7.0
+  package_info_plus: 10.2.0
+  screenshot: 3.0.0
+  flutter_image_compress: 2.4.0
+  llama_flutter_android: ^0.2.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+
+  # Code generation
+  build_runner: ^2.15.2
+  drift_dev: ^2.18.0
+  riverpod_generator: ^4.0.8
+
+  # Testing
+  mocktail: 1.0.4
+  alchemist: ^0.13.0
+
+  # Linting
+  flutter_lints: 6.0.0
+  custom_lint: ^0.8.1
+  riverpod_lint: ^3.1.4
+
+dependency_overrides:
+  video_player_avfoundation:
+    path: ../packages/platform_player/third_party/video_player_avfoundation
+  analyzer_plugin: ^0.14.0
+  analyzer: ^12.0.0
+  rxdart: ^0.28.0
+  flutter_chrome_cast:
+    path: ../packages/platform_player/third_party/flutter_chrome_cast
+
+  audio_service:
+    path: ../packages/stubs/audio_service_stub
+  just_audio:
+    path: ../packages/stubs/just_audio_stub
+  audioplayers:
+    path: ../packages/stubs/audioplayers_stub
+  share_plus:
+    path: ../packages/stubs/share_plus_stub
+  stockfish:
+    path: ../packages/stubs/stockfish_stub
+  chess:
+    path: ../packages/stubs/chess_stub
+  flame:
+    path: ../packages/stubs/flame_stub
+  google_mlkit_text_recognition:
+    path: ../packages/stubs/mlkit_stub
+  google_mlkit_image_labeling:
+    path: ../packages/stubs/mlkit_image_labeling_stub
+  flutter_tts:
+    path: ../packages/stubs/flutter_tts_stub
+  image_picker:
+    path: ../packages/stubs/image_picker_stub
+  file_picker:
+    path: ../packages/stubs/file_picker_stub
+  flutter_image_compress:
+    path: ../packages/stubs/flutter_image_compress_stub
+  flutter_contacts:
+    path: ../packages/stubs/flutter_contacts_stub
+  permission_handler:
+    path: ../packages/stubs/permission_handler_stub
+  flutter_local_notifications:
+    path: ../packages/stubs/flutter_local_notifications_stub
+  timezone:
+    path: ../packages/stubs/timezone_stub
+  pdfx:
+    path: ../packages/stubs/pdfx_stub
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/airo_icon.png

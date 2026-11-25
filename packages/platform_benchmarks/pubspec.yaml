@@ -1,0 +1,35 @@
+name: platform_benchmarks
+description: Host-runnable benchmark harnesses for Airo platform performance.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=1.17.0"
+
+dependencies:
+  core_media_data:
+    path: ../core_media_data
+  crypto: ^3.0.7
+  equatable: ^2.1.0
+  flutter:
+    sdk: flutter
+  platform_channels:
+    path: ../platform_channels
+  platform_device_profile:
+    path: ../platform_device_profile
+  platform_epg:
+    path: ../platform_epg
+  platform_player:
+    path: ../platform_player
+  platform_playlist_import:
+    path: ../platform_playlist_import
+  platform_worker_jobs:
+    path: ../platform_worker_jobs
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:

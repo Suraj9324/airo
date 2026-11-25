@@ -1,0 +1,806 @@
+import 'package:core_ui/core_ui.dart';
+import 'package:feature_iptv/feature_iptv.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:platform_playlist/platform_playlist.dart';
+
+/// Adds product-owned actions to a configured source row.
+///
+/// [ContentSourceConfig] never contains raw Xtream/Jellyfin credentials.
+/// Consumers that need credentials must resolve them independently through
+/// [contentSourceCredentialStoreProvider] rather than widening this UI
+/// contract.
+typedef TvSourceActionsBuilder =
+    List<Widget> Function(
+      BuildContext context,
+      WidgetRef ref,
+      ContentSourceConfig source,
+    );
+
+/// Builds the Sources detail pane for the TV settings shell.
+typedef TvSourceManagementSectionBuilder = Widget Function({Key? key});
+
+/// Product-composition seam for the TV Sources detail pane.
+///
+/// The public product always resolves to [TvSourceManagementSection].
+/// Overlays may replace the pane while continuing to compose that baseline
+/// widget and its source-management behavior.
+final tvSourceManagementSectionBuilderProvider =
+    Provider<TvSourceManagementSectionBuilder>(
+      (ref) =>
+          ({Key? key}) => TvSourceManagementSection(key: key),
+    );
+
+/// Content-source management section (CV-022 + CV-032): list configured
+/// sources with their capability flags, add a source of any kind
+/// (M3U / Xtream / Stalker / Jellyfin), remove any source with
+/// confirmation. The XMLTV guide source is managed by the embedded
+/// [XmltvSourceSheet] (a separate concept — EPG data, not a channel/VOD
+/// source).
+class TvSourceManagementSection extends ConsumerStatefulWidget {
+  const TvSourceManagementSection({super.key, this.sourceActionsBuilder});
+
+  /// Optional product actions rendered before Remove on every source row.
+  ///
+  /// Returning an empty list preserves the baseline row exactly.
+  final TvSourceActionsBuilder? sourceActionsBuilder;
+
+  @override
+  ConsumerState<TvSourceManagementSection> createState() =>
+      _TvSourceManagementSectionState();
+}
+
+class _TvSourceManagementSectionState
+    extends ConsumerState<TvSourceManagementSection> {
+  bool _showAddForm = false;
+  ContentSourceKind _kind = ContentSourceKind.m3u;
+  final _labelController = TextEditingController();
+  final _urlController = TextEditingController();
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _macController = TextEditingController();
+  String? _labelError;
+  String? _urlError;
+  String? _submitError;
+  String? _removeError;
+  String? _selectError;
+
+  @override
+  void dispose() {
+    _labelController.dispose();
+    _urlController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    _macController.dispose();
+    super.dispose();
+  }
+
+  void _resetForm() {
+    _showAddForm = false;
+    _kind = ContentSourceKind.m3u;
+    _labelController.clear();
+    _urlController.clear();
+    _usernameController.clear();
+    _passwordController.clear();
+    _macController.clear();
+    _labelError = null;
+    _urlError = null;
+    _submitError = null;
+    _removeError = null;
+    _selectError = null;
+  }
+
+  void _openAddForm() {
+    setState(() {
+      _showAddForm = true;
+      _labelError = null;
+      _urlError = null;
+      _submitError = null;
+      _removeError = null;
+      _selectError = null;
+    });
+  }
+
+  void _closeAddForm() {
+    setState(_resetForm);
+  }
+
+  /// Accepts only well-formed http/https URLs — the M3U fetcher can't do
+  /// anything useful with anything else, and a bad URL persisted silently
+  /// is worse than an inline error asking the user to fix it now.
+  String? _validateUrl(String url) {
+    if (url.isEmpty) return 'Enter a playlist URL.';
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !uri.hasScheme ||
+        !(uri.isScheme('http') || uri.isScheme('https'))) {
+      return 'Enter a valid http:// or https:// URL.';
+    }
+    return null;
+  }
+
+  Future<void> _addSource() async {
+    final label = _labelController.text.trim();
+    final url = _urlController.text.trim();
+
+    final labelError = label.isEmpty ? 'Enter a label.' : null;
+    final urlError = _validateUrl(url);
+
+    if (labelError != null || urlError != null) {
+      setState(() {
+        _labelError = labelError;
+        _urlError = urlError;
+        _submitError = null;
+      });
+      return;
+    }
+
+    if (_kind == ContentSourceKind.xtream ||
+        _kind == ContentSourceKind.jellyfin) {
+      final username = _usernameController.text.trim();
+      final password = _passwordController.text;
+      if (username.isEmpty || password.isEmpty) {
+        setState(() => _submitError = 'Username and password are required.');
+        return;
+      }
+    } else if (_kind == ContentSourceKind.stalker) {
+      final mac = _macController.text.trim();
+      if (mac.isEmpty) {
+        setState(() => _submitError = 'MAC address is required.');
+        return;
+      }
+    }
+
+    setState(() {
+      _labelError = null;
+      _urlError = null;
+      _submitError = null;
+    });
+
+    try {
+      switch (_kind) {
+        case ContentSourceKind.m3u:
+          await ref.read(
+            addM3uContentSourceProvider((label: label, url: url)).future,
+          );
+        case ContentSourceKind.xtream:
+          final username = _usernameController.text;
+          final password = _passwordController.text;
+          await ref.read(
+            addXtreamContentSourceProvider((
+              label: label,
+              url: url,
+              username: username,
+              password: password,
+            )).future,
+          );
+        case ContentSourceKind.stalker:
+          final mac = _macController.text.trim();
+          await ref.read(
+            addStalkerContentSourceProvider((
+              label: label,
+              url: url,
+              macAddress: mac,
+            )).future,
+          );
+        case ContentSourceKind.jellyfin:
+          final username = _usernameController.text;
+          final password = _passwordController.text;
+          await ref.read(
+            addJellyfinContentSourceProvider((
+              label: label,
+              url: url,
+              username: username,
+              password: password,
+            )).future,
+          );
+      }
+    } on XtreamAuthenticationException {
+      if (!mounted) return;
+      setState(
+        () => _submitError =
+            'Login was not accepted. Check your server and credentials.',
+      );
+      return;
+    } catch (_) {
+      // Provider exceptions may contain credential-bearing request URLs.
+      // Never interpolate them into diagnostics.
+      debugPrint('TvSourceManagementSection: source setup failed.');
+      if (!mounted) return;
+      setState(
+        () =>
+            _submitError = 'Could not add source. Check the URL and try again.',
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(_resetForm);
+  }
+
+  Future<void> _confirmRemove(ContentSourceConfig config) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove "${config.label}"?'),
+        content: const Text(
+          'This removes the source and any saved credentials.',
+        ),
+        actions: [
+          TvFocusable(
+            onSelect: () => Navigator.of(context).pop(false),
+            semanticLabel: 'Cancel',
+            semanticButton: true,
+            child: TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+          ),
+          TvFocusable(
+            onSelect: () => Navigator.of(context).pop(true),
+            semanticLabel: 'Remove',
+            semanticButton: true,
+            child: TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Remove'),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ref.read(removeContentSourceProvider(config.id).future);
+      if (!mounted) return;
+      setState(() => _removeError = null);
+    } catch (error) {
+      debugPrint('TvSourceManagementSection: remove source failed: $error');
+      if (!mounted) return;
+      setState(() => _removeError = 'Could not remove source. Try again.');
+    }
+  }
+
+  Future<void> _selectSource(ContentSourceConfig config) async {
+    try {
+      await ref.read(selectContentSourceProvider(config.id).future);
+      if (!mounted) return;
+      setState(() => _selectError = null);
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _selectError =
+            'Could not select this source. Check its configuration and retry.',
+      );
+    }
+  }
+
+  bool _hasStreamHeaders(ContentSourceConfig config) {
+    final userAgent = config.streamUserAgent?.trim();
+    final referrer = config.streamReferrer?.trim();
+    return (userAgent != null && userAgent.isNotEmpty) ||
+        (referrer != null && referrer.isNotEmpty);
+  }
+
+  Future<void> _editStreamHeaders(ContentSourceConfig config) async {
+    final userAgentController = TextEditingController(
+      text: config.streamUserAgent ?? '',
+    );
+    final referrerController = TextEditingController(
+      text: config.streamReferrer ?? '',
+    );
+    var dialogError = '';
+
+    await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> save({required bool clear}) async {
+              try {
+                await ref.read(
+                  updateContentSourceStreamHeadersProvider((
+                    id: config.id,
+                    userAgent: clear ? null : userAgentController.text,
+                    referrer: clear ? null : referrerController.text,
+                  )).future,
+                );
+                if (!dialogContext.mounted) return;
+                Navigator.of(dialogContext).pop(true);
+              } catch (error) {
+                debugPrint(
+                  'TvSourceManagementSection: update stream headers failed: $error',
+                );
+                setDialogState(() {
+                  dialogError = 'Could not save stream headers. Try again.';
+                });
+              }
+            }
+
+            return AlertDialog(
+              title: Text('Stream headers for "${config.label}"'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Default User-Agent and Referer for streams from this '
+                      'source. Channel-specific headers take precedence.',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: userAgentController,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'User-Agent',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: referrerController,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                      keyboardType: TextInputType.url,
+                      decoration: const InputDecoration(
+                        labelText: 'Referer',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    if (dialogError.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        dialogError,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TvFocusable(
+                  onSelect: () => Navigator.of(context).pop(false),
+                  semanticLabel: 'Cancel',
+                  semanticButton: true,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                if (_hasStreamHeaders(config))
+                  TvFocusable(
+                    onSelect: () => save(clear: true),
+                    semanticLabel: 'Clear stream headers',
+                    semanticButton: true,
+                    child: TextButton(
+                      onPressed: () => save(clear: true),
+                      child: const Text('Clear'),
+                    ),
+                  ),
+                TvFocusable(
+                  onSelect: () => save(clear: false),
+                  semanticLabel: 'Save stream headers',
+                  semanticButton: true,
+                  child: TextButton(
+                    onPressed: () => save(clear: false),
+                    child: const Text('Save'),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    userAgentController.dispose();
+    referrerController.dispose();
+  }
+
+  String _urlFieldLabel() {
+    switch (_kind) {
+      case ContentSourceKind.m3u:
+        return 'Playlist URL';
+      case ContentSourceKind.xtream:
+      case ContentSourceKind.jellyfin:
+        return 'Server URL';
+      case ContentSourceKind.stalker:
+        return 'Portal URL';
+    }
+  }
+
+  String _kindLabel(ContentSourceKind kind) {
+    switch (kind) {
+      case ContentSourceKind.m3u:
+        return 'M3U Playlist';
+      case ContentSourceKind.xtream:
+        return 'Xtream Codes';
+      case ContentSourceKind.stalker:
+        return 'Stalker Portal';
+      case ContentSourceKind.jellyfin:
+        return 'Jellyfin';
+    }
+  }
+
+  Widget _capabilityBadges(
+    BuildContext context,
+    ContentSourceCapabilities caps,
+  ) {
+    final flags = <String>[
+      'Live',
+      if (caps.hasEpg) 'EPG',
+      if (caps.hasVod) 'VOD',
+      if (caps.hasCatchup) 'Catch-up',
+    ];
+    if (flags.isEmpty) return const SizedBox.shrink();
+    final colorScheme = Theme.of(context).colorScheme;
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: [
+        for (final flag in flags)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              flag,
+              style: TextStyle(
+                color: colorScheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _healthSummary(BuildContext context, ProviderHealthSnapshot snapshot) {
+    final (label, icon, color) = switch (snapshot.healthClass) {
+      ProviderHealthClass.unknown => (
+        'Health not measured',
+        Icons.help_outline,
+        Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+      ProviderHealthClass.green => (
+        'Healthy',
+        Icons.check_circle_outline,
+        Colors.green,
+      ),
+      ProviderHealthClass.amber => (
+        'Intermittent issues',
+        Icons.warning_amber_outlined,
+        Colors.amber,
+      ),
+      ProviderHealthClass.red => (
+        'Frequent recent issues',
+        Icons.error_outline,
+        Theme.of(context).colorScheme.error,
+      ),
+    };
+    final hint = switch (snapshot.recentFailureCategory) {
+      ProviderHealthFailureCategory.auth =>
+        'Credentials rejected — reconnect the source.',
+      ProviderHealthFailureCategory.network => 'Cannot reach the server.',
+      ProviderHealthFailureCategory.server =>
+        'The source server is having issues.',
+      ProviderHealthFailureCategory.client => 'The request was rejected.',
+      ProviderHealthFailureCategory.malformed =>
+        'The source returned unreadable data.',
+      _ => null,
+    };
+    return Semantics(
+      label: hint == null ? label : '$label. $hint',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              hint == null ? label : '$label • $hint',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sourcesAsync = ref.watch(configuredContentSourcesProvider);
+    ref.watch(providerHealthRevisionProvider);
+    final healthTracker = ref.watch(providerHealthTrackerProvider);
+    final activeSourceId = ref.watch(activeContentSourceProvider).value?.id;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Content Sources',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(color: colorScheme.onSurface),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Every M3U, Xtream, and Stalker source you add merges into one '
+            'Live TV list. Xtream also supports EPG and VOD. Raw .m3u8 '
+            'links remain playback URLs, not channel lists.',
+            style: TextStyle(color: colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          sourcesAsync.when(
+            loading: () => const CircularProgressIndicator(),
+            error: (error, _) => Text('Could not load sources: $error'),
+            data: (sources) {
+              if (sources.isEmpty) {
+                return Text(
+                  'No sources configured yet.',
+                  style: TextStyle(color: colorScheme.onSurfaceVariant),
+                );
+              }
+              return Column(
+                children: [
+                  for (final config in sources)
+                    ListTile(
+                      leading: Icon(
+                        config.id == activeSourceId
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        color: config.id == activeSourceId
+                            ? colorScheme.primary
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                      title: Text(
+                        config.label,
+                        style: TextStyle(color: colorScheme.onSurface),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _kindLabel(config.kind),
+                            style: TextStyle(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          if (config.accountStatus != null)
+                            Text(
+                              [
+                                config.accountStatus!,
+                                if (config.maxConnections != null)
+                                  '${config.maxConnections} connection${config.maxConnections == 1 ? '' : 's'}',
+                              ].join(' • '),
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          if (_hasStreamHeaders(config))
+                            Text(
+                              'Custom stream headers',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          const SizedBox(height: 4),
+                          _capabilityBadges(
+                            context,
+                            config.toContentSource().capabilities,
+                          ),
+                          const SizedBox(height: 4),
+                          _healthSummary(
+                            context,
+                            healthTracker.snapshotFor(config.id),
+                          ),
+                        ],
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (config.id != activeSourceId &&
+                              config.kind != ContentSourceKind.jellyfin)
+                            TvFocusable(
+                              onSelect: () => _selectSource(config),
+                              semanticLabel:
+                                  'Use ${config.label} for on-demand',
+                              semanticButton: true,
+                              child: TextButton(
+                                onPressed: () => _selectSource(config),
+                                child: const Text('Use'),
+                              ),
+                            )
+                          else if (config.id == activeSourceId)
+                            Text(
+                              'Active',
+                              style: TextStyle(color: colorScheme.primary),
+                            )
+                          else
+                            const Text('Saved only'),
+                          ...?widget.sourceActionsBuilder?.call(
+                            context,
+                            ref,
+                            config,
+                          ),
+                          if (config.kind != ContentSourceKind.jellyfin)
+                            TvFocusable(
+                              onSelect: () => _editStreamHeaders(config),
+                              semanticLabel:
+                                  'Edit stream headers for ${config.label}',
+                              semanticButton: true,
+                              child: TextButton(
+                                onPressed: () => _editStreamHeaders(config),
+                                child: const Text('Headers'),
+                              ),
+                            ),
+                          TvFocusable(
+                            onSelect: () => _confirmRemove(config),
+                            semanticLabel: 'Remove ${config.label}',
+                            semanticButton: true,
+                            child: IconButton(
+                              icon: Icon(
+                                Icons.delete_outline,
+                                color: colorScheme.onSurface,
+                              ),
+                              onPressed: () => _confirmRemove(config),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          if (_removeError != null) ...[
+            const SizedBox(height: 8),
+            Text(_removeError!, style: TextStyle(color: colorScheme.error)),
+          ],
+          if (_selectError != null) ...[
+            const SizedBox(height: 8),
+            Text(_selectError!, style: TextStyle(color: colorScheme.error)),
+          ],
+          const SizedBox(height: 16),
+          if (!_showAddForm)
+            TvFocusable(
+              onSelect: _openAddForm,
+              semanticLabel: 'Add Source',
+              semanticButton: true,
+              child: FilledButton(
+                onPressed: _openAddForm,
+                child: const Text('Add Source'),
+              ),
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButton<ContentSourceKind>(
+                  key: const Key('source-kind-picker'),
+                  value: _kind,
+                  dropdownColor: colorScheme.surfaceContainerHigh,
+                  style: TextStyle(color: colorScheme.onSurface),
+                  onChanged: (kind) {
+                    if (kind == null) return;
+                    setState(() => _kind = kind);
+                  },
+                  items: [
+                    for (final kind in ContentSourceKind.values.where(
+                      (kind) => kind != ContentSourceKind.jellyfin,
+                    ))
+                      DropdownMenuItem(
+                        value: kind,
+                        child: Text(_kindLabel(kind)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _labelController,
+                  style: TextStyle(color: colorScheme.onSurface),
+                  decoration: InputDecoration(
+                    labelText: 'Label',
+                    border: const OutlineInputBorder(),
+                    errorText: _labelError,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _urlController,
+                  style: TextStyle(color: colorScheme.onSurface),
+                  decoration: InputDecoration(
+                    labelText: _urlFieldLabel(),
+                    border: const OutlineInputBorder(),
+                    errorText: _urlError,
+                  ),
+                ),
+                if (_kind == ContentSourceKind.xtream ||
+                    _kind == ContentSourceKind.jellyfin) ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _usernameController,
+                    style: TextStyle(color: colorScheme.onSurface),
+                    decoration: const InputDecoration(
+                      labelText: 'Username',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _passwordController,
+                    style: TextStyle(color: colorScheme.onSurface),
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Password',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+                if (_kind == ContentSourceKind.stalker) ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _macController,
+                    style: TextStyle(color: colorScheme.onSurface),
+                    decoration: const InputDecoration(
+                      labelText: 'MAC Address',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+                if (_submitError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _submitError!,
+                    style: TextStyle(color: colorScheme.error),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    TvFocusable(
+                      onSelect: _addSource,
+                      semanticLabel: 'Save',
+                      semanticButton: true,
+                      child: FilledButton(
+                        onPressed: _addSource,
+                        child: const Text('Save'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TvFocusable(
+                      onSelect: _closeAddForm,
+                      semanticLabel: 'Cancel',
+                      semanticButton: true,
+                      child: TextButton(
+                        onPressed: _closeAddForm,
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 16),
+          const XmltvSourceSheet(),
+        ],
+      ),
+    );
+  }
+}

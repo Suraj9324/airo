@@ -1,0 +1,209 @@
+# Aika Stream — first Play Store gate
+
+Release-engineer scan of `origin/main` (`c23c8a23`) before the identity
+refactor, plus the decisions that make the first Play listing friction-free.
+
+This document is the working gate for `com.developerscoffee.tv.midas`. It does
+not rewrite historical Aika Stream evidence under `docs/release/evidence/`.
+
+## Scan findings (main)
+
+| Surface | On `main` | First-release decision |
+| --- | --- | --- |
+| Android TV `applicationId` | `io.airo.app.tv` | **New listing** `com.developerscoffee.tv.midas`. Package IDs cannot be renamed in Play Console. |
+| Gradle `namespace` | `io.airo.app` | Keep. Play cares about `applicationId`; moving Kotlin sources is out of scope. |
+| Launcher label | `Aika Stream` | `Aika Stream` |
+| macOS bundle ID | `com.developerscoffee.airo.tv` | Unchanged this wave. Not a Play Store artifact. |
+| Store listing / legal URLs | Aika Stream copy | Relabeled to Aika Stream; same GitHub Pages paths. |
+| iptv-org one-tap presets | Shipped in the playlist manager | **Removed.** One-tap public playlists are a Play intellectual-property rejection. |
+| iptv-org catalogue fetch | `channels.json` / `feeds.json` / `streams.json` on browse | **Disabled.** `streams.json` is a public stream URL catalogue. |
+| Empty-state disclaimer | Present, said "Airo" | Kept; product name is Aika Stream. |
+| TV manifest `usesCleartextTraffic` | `false`, but network-security-config permits HTTP | Honest BYOC playback tradeoff; disclosed in privacy policy. |
+| `RECEIVE_BOOT_COMPLETED` | Declared | Keep for WorkManager restore; justify in Play declarations. |
+| `FOREGROUND_SERVICE_DATA_SYNC` | Missing on TV while WorkManager declares `dataSync` | **Added** so Android 14+ does not crash a foreground WorkManager job. |
+| Firebase Android client | Registered for `io.airo.app.tv` | **Human:** register `com.developerscoffee.tv.midas` and refresh `GOOGLE_SERVICES_JSON`. |
+| Digital Asset Links | `io.airo.app.tv` | **Human:** publish SHA-256 for the new package on `developerscoffee.github.io`. |
+
+## Product identity
+
+| Field | Value |
+| --- | --- |
+| App name | Aika Stream |
+| Android package | `com.developerscoffee.tv.midas` |
+| Entrypoint | `app/lib/main_tv.dart` |
+| Pubspec | `app/pubspec_tv.yaml` |
+| Device class | Android TV, Google TV, Fire TV, and Android phone/tablet (`android.software.leanback` set `required="false"` in `app/android/app/src/tv/AndroidManifest.xml`) |
+| Category | Video Players & Editors |
+| Content model | Media player for user-supplied M3U/M3U8 URLs only |
+| First Play dart-defines | **Unset.** Do not pass `IPTV_DATA_PLAYLIST_URL` or `IPTV_DATA_MANIFEST_URL`. Privacy currently names only user-configured XMLTV. |
+| Country XMLTV | Device fetches one EPGShare01 country gzip when Settings country is set and the user has not pasted an XMLTV URL. Never ALL_SOURCES. Privacy names country/pasted XMLTV only. |
+| Privacy Policy | `https://developerscoffee.github.io/airo/legal/privacy-policy/` |
+| Data deletion | `https://developerscoffee.github.io/airo/legal/data-deletion/` |
+| Terms | `https://developerscoffee.github.io/airo/legal/terms-conditions/` |
+
+## Play policy posture
+
+Aika Stream is a **bring-your-own-content player**. It does not provide,
+host, sell, or recommend channels, playlists, or streams. The first listing
+must not:
+
+- ship or one-tap a public IPTV index (including iptv-org);
+- claim "free live TV", "channels included", or a bundled catalogue;
+- download a third-party stream URL database for enrichment;
+- target children (privacy minimum age remains 16+).
+
+Users paste an authorized playlist URL. Tests may still use iptv-org URLs as
+**fixtures the test itself supplies**, which is not the same as shipping a
+preset in production UI.
+
+## Release plan
+
+1. **v0.0.1 preview (this wave):** production-signed Pixel sideload / internal
+   UAT. `versionName` is `0.0.1`. Play already consumed `versionCode` **13**
+   when the first AAB was attached, so the first Play drop is **14** (`0.0.1+14`).
+   Bundle 14 shipped `android.software.leanback` `required="true"` and is TV-only
+   on Play. The phone/tablet-capable drop is **15** (`0.0.1+15`), after
+   `required="false"` in the tv-flavor manifest.
+2. **v0.0.1 hard release (after UAT):** same `versionName` on Play. Never reuse
+   a `versionCode` Play has already seen, even if that AAB was removed from a
+   draft.
+
+Pixel sideload uses the **upload** key. Play-installed APKs use Google's **app
+signing** key. A Pixel preview install will **not** upgrade in place to the
+Play listing — uninstall the sideload before installing from Play.
+
+## Upgrade path (v0.0.1)
+
+Android upgrades in place only when **package name**, **signing certificate**,
+and **versionCode** all match. `versionName` (`0.0.1`) is cosmetic.
+
+| Currently installed | Next Aika Stream build | Upgrades in place? |
+| --- | --- | --- |
+| Sideloaded GitHub **Aika Stream** `io.airo.app.tv` | `com.developerscoffee.tv.midas` | **No.** Different `applicationId`. Uninstall Aika Stream first. |
+| Same package, **ephemeral CI** cert | Production/dogfood-signed build | **No.** Different cert (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`). Uninstall first. |
+| Same package, **same upload/production key**, lower `versionCode` | `0.0.1+14` | **Yes.** |
+| Play-installed Aika Stream (Play App Signing) | Later Play AAB, same upload key, higher `versionCode` | **Yes.** Play re-signs with the Google-held app signing key. |
+
+`app/pubspec_tv.yaml` was `0.0.7+12` (`versionCode` 12). A Play listing of
+`0.0.1+1` would be a **downgrade** over any already-installed Aika Stream build with
+code 12. Preview and first Play AAB must ship `versionCode >= 13`
+(`0.0.1+13`). Play consumed 13 on the first Console attach, so the listing
+drop is `0.0.1+14`.
+
+That is why earlier CI/RC installs needed delete-and-reinstall: unsigned
+ephemeral keystores change every run. Production signing from
+`app/android/release.keystore` (GitHub `ANDROID_RELEASE_KEYSTORE_BASE64`) is
+stable. Do not mix `~/airo-release.keystore`.
+
+Public fingerprints: [aika-stream-play-app-signing.json](./aika-stream-play-app-signing.json).
+
+## Human console actions (not code)
+
+| Step | Status |
+| --- | --- |
+| Create Play Console app `com.developerscoffee.tv.midas` | Done (app id `4972670245912164415`) |
+| Register Firebase Android client | Done (`1:906799550225:android:c5df8d843e7dd6002206b0`) |
+| Confirm upload keystore + Play App Signing | Play App Signing enrolled; first AAB signed with `app/android/release.keystore` |
+| GitHub production signing + `GOOGLE_SERVICES_JSON` | Set from local Gradle keystore and merged `google-services.json` |
+| Complete IARC / Data Safety | IARC done. Data Safety saved (Device or other IDs only). Send for review from Publishing overview after listing graphics. |
+| 512×512 icon + TV screenshots | Exported under `docs/store-assets/airo-tv/` (`01`–`04`, skip `05`). **Console Save still required** before any AAB upload — that Save is what replaces the Midas Stream header. |
+| Pixel-line install and smoke | v0.0.1 preview UAT; Play hard release after listing graphics + internal track |
+| First Play AAB filename | Drop `Aika-Stream-0.0.1-14.aab` (rename of CI `Airo-TV-0.0.1-Play-Store.aab`, `versionCode` **14**). Remove any draft that used version 13 first. |
+
+## Play Console dual form-factor (`0.0.1+19`) then `0.0.2+20`–`22` then `0.0.3+23`–`25` then `0.0.4+26`–`28`
+
+Play already consumed `versionCode` **18**–**29** (historical). **28** was an earlier
+Play upload (spent). **29** was consumed and rejected under Android Auto / car
+login rules ([#2135](https://github.com/DevelopersCoffee/airo/pull/2135), `d65146c1`
+commit message). SSOT on `main` is now
+**30** (`0.0.4+30` in `app/pubspec_tv.yaml`, [#2135](https://github.com/DevelopersCoffee/airo/pull/2135)).
+Never reuse spent codes per OKF. `versionName` stays
+`0.0.4`. Overlay Pro AABs uploaded at **28** used the Play `goog_` RevenueCat SDK key
+(Billing Library 8 / RevenueCat Flutter 9.16.1) and refuse Test Store `test_`
+keys in release (that build is spent; current TV SSOT is **+30**).
+
+**Android Auto (2026-11-09):** TV Gradle variants replace the main manifest with
+`app/android/app/src/tv/AndroidManifest.xml` (`app/android/app/build.gradle.kts`,
+`isTvVariant` → `manifest.srcFile("src/tv/AndroidManifest.xml")`). That TV manifest
+explicitly **does not** declare Android Auto ([#2135](https://github.com/DevelopersCoffee/airo/pull/2135),
+`d65146c1`). The full/phone `main` manifest may still expose
+`com.google.android.gms.car.application` (`app/android/app/src/main/AndroidManifest.xml`)
+for car projection on non-TV builds. Do not describe the TV listing AAB as an Android
+Auto app.
+
+Play Console rec on 19 (the only remaining production action): R8
+optimization, obfuscation, and shrinking all at **26%**. 0.0.2 drops the
+GMS/Firebase/ML Kit/lifecycle blanket `-keep` rules (same class of fix as
+`65b0b2d5` for `androidx.**`) and turns on
+`android.r8.optimizedResourceShrinking`. Edge-to-edge and bitmap recs on 17
+are already cleared on 19.
+
+Pixel 9 missing from the 18 test track is a Console gap, not a missing
+activity. The TV APK already keeps `android.software.leanback` and
+`android.hardware.touchscreen` `required="false"` and both `LAUNCHER` and
+`LEANBACK_LAUNCHER` in `app/android/app/src/tv/AndroidManifest.xml`. Do
+not flip leanback to required — that makes the listing TV-only again.
+
+Human Console checklist before declaring 19 installable on Bravia **and**
+Pixel 9:
+
+| Step | What to confirm |
+| --- | --- |
+| Form factors | Enable **Phone**, **Tablet**, and **TV** only (same listing). Do not leave the app TV-only. Wi-Fi tablets need `android.hardware.telephony` `required="false"`. The TV-listing AAB does **not** ship Android Auto — use the phone app (`io.airo.app`) for Auto, not `com.developerscoffee.tv.midas`. |
+| Phone screenshots | Save a phone screenshot set (compact explorer, 16:9 or 9:16). TV-only screenshots keep Pixel 9 out of the catalog. |
+| Tablet screenshots | Save 7-inch and 10-inch tablet screenshots. Missing tablet graphics keep tablets out of the catalog even when `supports-screens` is open. |
+| TV screenshots | Keep the existing TV set under `docs/store-assets/airo-tv/` (`01`–`04`, skip `05`). Console Save still required. |
+| Testers | Internal/test-track testers include both phone and TV accounts. |
+| Device catalog | Pixel 9 and the Sony Bravia appear as supported. If Pixel 9 is absent, form factors or screenshots are incomplete — do not cut another AAB with `leanback required=true`. |
+| Sideload vs Play | Testers must **uninstall sideloads** before installing from Play. Pixel sideload uses the upload key; Play-installed APKs use Play App Signing and will not upgrade in place (see Upgrade path above). |
+
+Cut the AAB from current `app/pubspec_tv.yaml` SSOT via
+`.github/workflows/aika-stream-release.yml` **after** this packet is green. Do not
+reuse spent `versionCode` values. Enable Phone, Tablet, and TV form factors on the
+dual-form-factor listing.
+
+## Out of scope this wave
+
+- Renaming the Airo super-app, Coins, or Mind packages.
+- macOS bundle ID / Homebrew cask rename. The current preview DMG still
+  mounts as `Airo TV.app`.
+- Rewriting historical qualification evidence.
+- Changing GitHub artifact filenames (`Airo-TV-*.apk` / `Airo-TV-*-Play-Store.aab`)
+  in CI for this first listing. Play reads package, `versionCode`, and cert.
+  Rename the CI AAB to `Aika-Stream-0.0.1-14.aab` for the Console drop only.
+
+Do not upload the AAB until all of these are true:
+
+1. Store listing **name + graphics** are saved (Console chrome is Aika Stream,
+   not Midas Stream).
+2. Public product pages show Aika Stream in the header and download CTA.
+3. The draft release contains one file: `Aika-Stream-0.0.1-14.aab` (`0.0.1+14`).
+4. `scripts/check-aab-size-budget.sh` passes locally against that exact AAB,
+   and `scripts/check-proguard-keep-budget.sh` passes against
+   `app/android/app/proguard-rules.pro` — see "Pre-upload optimization check"
+   below.
+
+## Pre-upload optimization check (shift-left)
+
+Play Console's App Bundle Explorer scores an upload on shrinking,
+obfuscation, and native debug symbols *after* it's already live in a testing
+track. Catch regressions before that upload instead:
+
+1. **Size budget** — `scripts/check-aab-size-budget.sh <path-to-app-release.aab>`.
+   Uses `bundletool` (`brew install bundletool`, or set `BUNDLETOOL_JAR`) to
+   compute the real universal-device install size the same way Play does;
+   falls back to raw `.aab` file size (an overstatement) if bundletool isn't
+   installed. Budget is 80 MB, matching the CI universal-APK gate.
+2. **ProGuard keep budget** — `scripts/check-proguard-keep-budget.sh`. Fails
+   if `proguard-rules.pro` has grown a new blanket `-keep class <pkg>.**
+   { *; }` outside the reviewed allowlist. This is the exact regression class
+   that caused the original low optimization score (65b0b2d5 dropped a
+   blanket `androidx.**` keep); CI runs this too (`ci.yml`, `pr-checks.yml`),
+   but run it locally before a manual upload as well.
+3. **Native debug symbols** — `app/android/app/build.gradle.kts` sets
+   `ndk.debugSymbolLevel = "FULL"` on the release build type, so `bundleRelease`
+   writes `app/android/app/build/outputs/native-debug-symbols/release/native-debug-symbols.zip`.
+   CI uploads this as the `airo-tv-native-debug-symbols-<version>` artifact —
+   attach it in Play Console under App bundle explorer → Downloads → Upload
+   native debug symbols so NDK crashes (media3, sqlite3, litertlm, stockfish
+   JNI) symbolicate instead of showing raw addresses.

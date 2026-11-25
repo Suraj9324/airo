@@ -1,0 +1,512 @@
+import 'package:equatable/equatable.dart';
+
+import 'channel_stream_source.dart';
+
+/// Video quality levels for adaptive bitrate streaming
+enum VideoQuality {
+  auto('Auto', 0),
+  low('360p', 360),
+  medium('480p', 480),
+  high('720p', 720),
+  fullHd('1080p', 1080),
+  ultraHd('4K', 2160);
+
+  const VideoQuality(this.label, this.height);
+  final String label;
+  final int height;
+}
+
+/// Channel category for filtering
+enum ChannelCategory {
+  all('All'),
+  news('News'),
+  entertainment('Entertainment'),
+  sports('Sports'),
+  music('Music'),
+  movies('Movies'),
+  kids('Kids'),
+  documentary('Documentary'),
+  regional('Regional'),
+  international('International'),
+  lifestyle('Lifestyle'),
+  devotional('Devotional'),
+  business('Business'),
+  general('General');
+
+  const ChannelCategory(this.label);
+  final String label;
+
+  /// Parse category from string
+  static ChannelCategory fromString(String value) {
+    return ChannelCategory.values.firstWhere(
+      (c) => c.name.toLowerCase() == value.toLowerCase(),
+      orElse: () => ChannelCategory.general,
+    );
+  }
+}
+
+/// Channel flavor for taste-based filtering
+enum ChannelFlavor {
+  hindiMusic('Hindi Music'),
+  englishMusic('English Music'),
+  hindiNews('Hindi News'),
+  englishNews('English News'),
+  hindiEntertainment('Hindi Entertainment'),
+  regionalEntertainment('Regional Entertainment'),
+  sports('Sports'),
+  movies('Movies'),
+  kids('Kids'),
+  devotional('Devotional'),
+  lifestyle('Lifestyle'),
+  general('General');
+
+  const ChannelFlavor(this.label);
+  final String label;
+
+  /// Parse flavor from string
+  static ChannelFlavor fromString(String value) {
+    return ChannelFlavor.values.firstWhere(
+      (c) => c.name == value,
+      orElse: () => ChannelFlavor.general,
+    );
+  }
+}
+
+/// HTTP headers for stream access
+class ChannelHeaders extends Equatable {
+  final String? userAgent;
+  final String? referrer;
+
+  const ChannelHeaders({this.userAgent, this.referrer});
+
+  factory ChannelHeaders.fromJson(Map<String, dynamic> json) {
+    return ChannelHeaders(
+      userAgent: json['userAgent'] as String?,
+      referrer: json['referrer'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    if (userAgent != null) 'userAgent': userAgent,
+    if (referrer != null) 'referrer': referrer,
+  };
+
+  @override
+  List<Object?> get props => [userAgent, referrer];
+}
+
+/// IPTV Channel model
+class IPTVChannel extends Equatable {
+  final String id;
+  final String name;
+  final String streamUrl;
+  final String? logoUrl;
+  final String group;
+  final ChannelCategory category;
+  final ChannelFlavor flavor;
+
+  /// ISO country code supplied by the playlist, or null when it declares none.
+  /// Never defaulted: an invented value is indistinguishable from a real one
+  /// and surfaces as a bogus filter option while enrichment is still loading.
+  final String? country;
+
+  /// Original playlist `tvg-id` / XMLTV `channel id`. [tvgId] only keeps
+  /// numeric ids, so string values such as `MTV.in@SD` live here.
+  final String? xmltvId;
+  final bool isAudioOnly;
+
+  /// Languages supplied by the playlist; empty when it declares none. Left
+  /// empty rather than assumed for the same reason as [country].
+  final List<String> languages;
+  final Map<String, String>? qualityUrls;
+  final int? tvgId;
+  final String? tvgName;
+  final DateTime? lastChecked;
+  final bool isWorking;
+  final ChannelHeaders? headers;
+  final List<String> sources;
+  final List<String> altNames;
+  final List<String> categories;
+  final ChannelImportProvenance provenance;
+  final List<ChannelStreamSource> streamSources;
+
+  const IPTVChannel({
+    required this.id,
+    required this.name,
+    required this.streamUrl,
+    this.logoUrl,
+    this.group = 'Uncategorized',
+    this.category = ChannelCategory.all,
+    this.flavor = ChannelFlavor.general,
+    this.country,
+    this.xmltvId,
+    this.isAudioOnly = false,
+    this.languages = const [],
+    this.qualityUrls,
+    this.tvgId,
+    this.tvgName,
+    this.lastChecked,
+    this.isWorking = true,
+    this.headers,
+    this.sources = const [],
+    this.altNames = const [],
+    this.categories = const [],
+    this.provenance = ChannelImportProvenance.unknown,
+    this.streamSources = const [],
+  });
+
+  /// Create from preprocessed JSON (from IPTV Sanity Agent)
+  factory IPTVChannel.fromJson(Map<String, dynamic> json) {
+    return IPTVChannel(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      streamUrl: json['streamUrl'] as String,
+      logoUrl: json['logoUrl'] as String?,
+      group: _normalizeGroup(json['group'] as String?),
+      category: ChannelCategory.fromString(
+        json['category'] as String? ?? 'general',
+      ),
+      flavor: ChannelFlavor.fromString(json['flavor'] as String? ?? 'general'),
+      country: json['country'] as String?,
+      xmltvId: json['xmltvId'] as String?,
+      isAudioOnly: json['isAudioOnly'] as bool? ?? false,
+      languages:
+          (json['languages'] as List<dynamic>?)?.cast<String>() ?? const [],
+      qualityUrls: (json['qualityUrls'] as Map<String, dynamic>?)
+          ?.cast<String, String>(),
+      tvgId: json['tvgId'] as int?,
+      tvgName: json['tvgName'] as String?,
+      isWorking: json['isWorking'] as bool? ?? true,
+      headers: json['headers'] != null
+          ? ChannelHeaders.fromJson(json['headers'] as Map<String, dynamic>)
+          : null,
+      sources: (json['sources'] as List<dynamic>?)?.cast<String>() ?? const [],
+      altNames:
+          (json['altNames'] as List<dynamic>?)?.cast<String>() ?? const [],
+      categories:
+          (json['categories'] as List<dynamic>?)?.cast<String>() ?? const [],
+      provenance: ChannelImportProvenance.fromJson(json['provenance']),
+      streamSources:
+          (json['streamSources'] as List<dynamic>?)
+              ?.map(
+                (source) => ChannelStreamSource.fromJson(
+                  (source as Map).cast<String, Object?>(),
+                ),
+              )
+              .toList(growable: false) ??
+          const [],
+    );
+  }
+
+  /// Convert to JSON for caching
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'streamUrl': streamUrl,
+    if (logoUrl != null) 'logoUrl': logoUrl,
+    'group': group,
+    'category': category.name,
+    'flavor': flavor.name,
+    if (country != null) 'country': country,
+    if (xmltvId != null) 'xmltvId': xmltvId,
+    'isAudioOnly': isAudioOnly,
+    'languages': languages,
+    if (qualityUrls != null) 'qualityUrls': qualityUrls,
+    if (tvgId != null) 'tvgId': tvgId,
+    if (tvgName != null) 'tvgName': tvgName,
+    'isWorking': isWorking,
+    if (headers != null) 'headers': headers!.toJson(),
+    if (sources.isNotEmpty) 'sources': sources,
+    if (altNames.isNotEmpty) 'altNames': altNames,
+    if (categories.isNotEmpty) 'categories': categories,
+    'provenance': provenance.name,
+    if (streamSources.isNotEmpty)
+      'streamSources': streamSources
+          .map((source) => source.toJson())
+          .toList(growable: false),
+  };
+
+  /// Check if channel supports multiple quality levels
+  bool get hasMultipleQualities =>
+      qualityUrls != null && qualityUrls!.length > 1;
+
+  /// Check if channel has a valid logo URL
+  bool get hasLogo => logoUrl != null && logoUrl!.isNotEmpty;
+
+  /// Get logo URL with fallback to a placeholder based on category
+  /// Returns null if no suitable logo is available (use default placeholder widget)
+  String? get effectiveLogoUrl {
+    if (hasLogo) return logoUrl;
+    // Return null to indicate UI should use default placeholder widget
+    return null;
+  }
+
+  /// Get stream URL for specific quality
+  String getStreamUrl([VideoQuality quality = VideoQuality.auto]) {
+    if (quality == VideoQuality.auto || qualityUrls == null) {
+      return streamUrl;
+    }
+    return qualityUrls![quality.name] ?? streamUrl;
+  }
+
+  /// Create from M3U entry
+  factory IPTVChannel.fromM3U({
+    required String name,
+    required String url,
+    String? logo,
+    String? group,
+    String? tvgId,
+    String? tvgName,
+    String? language,
+  }) {
+    final normalizedGroup = _normalizeGroup(group);
+    final trimmedXmltvId = tvgId?.trim();
+    return IPTVChannel(
+      id: url.hashCode.toString(),
+      name: name,
+      streamUrl: url,
+      logoUrl: logo,
+      group: normalizedGroup,
+      category: _inferCategory(normalizedGroup, name),
+      xmltvId: (trimmedXmltvId == null || trimmedXmltvId.isEmpty)
+          ? null
+          : trimmedXmltvId,
+      country: _countryFromXmltvId(trimmedXmltvId),
+      isAudioOnly: _isAudioStream(url, normalizedGroup, name),
+      languages: language != null ? [language] : const [],
+      tvgId: tvgId != null ? int.tryParse(tvgId) : null,
+      tvgName: tvgName,
+    );
+  }
+
+  /// XMLTV channel id to query a guide with. Prefers the original playlist
+  /// `tvg-id` (which may be a non-numeric iptv-org id like `MTV.in@SD`) over
+  /// the stream-URL hash stored in [id].
+  String get resolvedEpgChannelId {
+    final xmltv = xmltvId?.trim();
+    if (xmltv != null && xmltv.isNotEmpty) return xmltv;
+    if (tvgId != null) return tvgId.toString();
+    return id;
+  }
+
+  /// Ids to try against an XMLTV/EPG repository. iptv-org playlists use
+  /// `Name.cc@SD` while many guides publish the bare `Name.cc`, so both the
+  /// full id and the id with a trailing `@quality` suffix stripped are
+  /// offered.
+  List<String> get epgLookupIds {
+    final primary = resolvedEpgChannelId;
+    final ids = <String>[primary];
+    final at = primary.lastIndexOf('@');
+    if (at > 0) {
+      final stripped = primary.substring(0, at);
+      if (stripped.isNotEmpty) ids.add(stripped);
+    }
+    return List.unmodifiable(ids);
+  }
+
+  /// Derives an ISO country code from an iptv-org-style xmltv id
+  /// (`MTV.in@SD` → `IN`). Returns null when the id doesn't carry one.
+  static String? _countryFromXmltvId(String? xmltvId) {
+    if (xmltvId == null || xmltvId.isEmpty) return null;
+    final match = RegExp(r'\.([A-Za-z]{2})(?:@|$)').firstMatch(xmltvId);
+    if (match == null) return null;
+    return match.group(1)!.toUpperCase();
+  }
+
+  /// Sentinel group-title values some providers send for unsorted streams
+  /// (e.g. Xtream category_id 0 → "Undefined"). Displaying these verbatim
+  /// leaks provider-internal placeholders to the UI, so map to our own
+  /// fallback label.
+  static const _junkGroupValues = {'undefined', 'n/a', 'none', 'null'};
+
+  static String _normalizeGroup(String? raw) {
+    final trimmed = raw?.trim() ?? '';
+    if (trimmed.isEmpty || _junkGroupValues.contains(trimmed.toLowerCase())) {
+      return 'Uncategorized';
+    }
+    return _canonicalizeGroupLabel(trimmed);
+  }
+
+  static String _canonicalizeGroupLabel(String raw) {
+    final collapsed = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final buffer = StringBuffer();
+
+    for (var i = 0; i < collapsed.length; i++) {
+      final char = collapsed[i];
+      if (char == ' ' || char == '&' || char == '/') {
+        buffer.write(char);
+        continue;
+      }
+
+      final start = i;
+      while (i < collapsed.length &&
+          collapsed[i] != ' ' &&
+          collapsed[i] != '&' &&
+          collapsed[i] != '/') {
+        i++;
+      }
+      final token = collapsed.substring(start, i);
+      buffer.write(_canonicalizeGroupToken(token));
+      i--;
+    }
+
+    return buffer.toString();
+  }
+
+  static String _canonicalizeGroupToken(String token) {
+    if (token.contains('-')) {
+      return token.split('-').map(_canonicalizeGroupToken).join('-');
+    }
+
+    final upper = token.toUpperCase();
+    if (_preservedGroupAcronyms.contains(upper)) return upper;
+
+    final lower = token.toLowerCase();
+    if (lower.isEmpty) return lower;
+    return '${lower[0].toUpperCase()}${lower.substring(1)}';
+  }
+
+  static const _preservedGroupAcronyms = {
+    'TV',
+    'HD',
+    'SD',
+    'UHD',
+    '4K',
+    'FM',
+    'AM',
+    'USA',
+    'UK',
+    'UAE',
+    'BBC',
+    'CNN',
+    'IPTV',
+  };
+
+  static ChannelCategory _inferCategory(String group, [String? name]) {
+    final g = group.toLowerCase();
+    final n = (name ?? '').toLowerCase();
+
+    // Check both group and name for better classification
+    final combined = '$g $n';
+
+    // Music channels - check for known music channel names
+    if (_isMusicChannel(combined)) return ChannelCategory.music;
+
+    if (combined.contains('news')) return ChannelCategory.news;
+    if (combined.contains('sport')) return ChannelCategory.sports;
+    if (combined.contains('movie') || combined.contains('cinema')) {
+      return ChannelCategory.movies;
+    }
+    if (combined.contains('kid') || combined.contains('cartoon')) {
+      return ChannelCategory.kids;
+    }
+    if (combined.contains('doc')) return ChannelCategory.documentary;
+    if (combined.contains('entertainment')) {
+      return ChannelCategory.entertainment;
+    }
+    return ChannelCategory.all;
+  }
+
+  /// Check if channel is a music channel based on name patterns
+  static bool _isMusicChannel(String text) {
+    // Known music channel patterns
+    const musicPatterns = [
+      'music',
+      'mtv',
+      '9xm',
+      '9x jalwa',
+      'b4u music',
+      'b4u beats',
+      'vh1',
+      'mastiii',
+      'zing',
+      'radio',
+      'fm',
+      'hits',
+      'bollywood music',
+      'punjabi music',
+      'gaana',
+      'saavn',
+      'hungama music',
+    ];
+
+    for (final pattern in musicPatterns) {
+      if (text.contains(pattern)) return true;
+    }
+    return false;
+  }
+
+  static bool _isAudioStream(String url, String? group, [String? name]) {
+    final u = url.toLowerCase();
+    final g = (group ?? '').toLowerCase();
+    final n = (name ?? '').toLowerCase();
+    final combined = '$g $n';
+
+    return u.contains('radio') ||
+        u.endsWith('.mp3') ||
+        u.endsWith('.aac') ||
+        combined.contains('radio') ||
+        combined.contains('fm ');
+  }
+
+  IPTVChannel copyWith({
+    String? id,
+    String? name,
+    String? streamUrl,
+    String? logoUrl,
+    String? group,
+    ChannelCategory? category,
+    ChannelFlavor? flavor,
+    String? country,
+    String? xmltvId,
+    bool? isAudioOnly,
+    List<String>? languages,
+    Map<String, String>? qualityUrls,
+    int? tvgId,
+    String? tvgName,
+    DateTime? lastChecked,
+    bool? isWorking,
+    ChannelHeaders? headers,
+    List<String>? sources,
+    List<String>? altNames,
+    List<String>? categories,
+    ChannelImportProvenance? provenance,
+    List<ChannelStreamSource>? streamSources,
+  }) {
+    return IPTVChannel(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      streamUrl: streamUrl ?? this.streamUrl,
+      logoUrl: logoUrl ?? this.logoUrl,
+      group: group == null ? this.group : _normalizeGroup(group),
+      category: category ?? this.category,
+      flavor: flavor ?? this.flavor,
+      country: country ?? this.country,
+      xmltvId: xmltvId ?? this.xmltvId,
+      isAudioOnly: isAudioOnly ?? this.isAudioOnly,
+      languages: languages ?? this.languages,
+      qualityUrls: qualityUrls ?? this.qualityUrls,
+      tvgId: tvgId ?? this.tvgId,
+      tvgName: tvgName ?? this.tvgName,
+      lastChecked: lastChecked ?? this.lastChecked,
+      isWorking: isWorking ?? this.isWorking,
+      headers: headers ?? this.headers,
+      sources: sources ?? this.sources,
+      altNames: altNames ?? this.altNames,
+      categories: categories ?? this.categories,
+      provenance: provenance ?? this.provenance,
+      streamSources: streamSources ?? this.streamSources,
+    );
+  }
+
+  @override
+  List<Object?> get props => [
+    id,
+    name,
+    streamUrl,
+    group,
+    category,
+    flavor,
+    country,
+  ];
+}

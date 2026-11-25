@@ -1,0 +1,185 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:platform_channels/platform_channels.dart';
+
+void main() {
+  test('round-trips import provenance and ordered stream sources', () {
+    const channel = IPTVChannel(
+      id: 'stable',
+      name: 'News One',
+      streamUrl: 'https://live.example/stream',
+      provenance: ChannelImportProvenance.unmatched,
+      categories: ['news', 'general'],
+      streamSources: [
+        ChannelStreamSource(
+          url: 'https://live.example/stream',
+          health: ChannelSourceHealth.available,
+          labelCorrect: true,
+          framesPerSecond: 50,
+          height: 720,
+          quality: 'high',
+          userAgent: 'Airo-Test',
+          referrer: 'https://guide.example',
+        ),
+        ChannelStreamSource(
+          url: 'https://backup.example/stream',
+          health: ChannelSourceHealth.unchecked,
+        ),
+      ],
+    );
+
+    final decoded = IPTVChannel.fromJson(channel.toJson());
+
+    expect(decoded.provenance, ChannelImportProvenance.unmatched);
+    expect(decoded.categories, channel.categories);
+    expect(decoded.streamSources, channel.streamSources);
+  });
+
+  group('IPTVChannel xmltv id', () {
+    test('fromM3U keeps a string tvg-id and infers country', () {
+      final channel = IPTVChannel.fromM3U(
+        name: 'MTV',
+        url: 'https://cdn.example.com/mtv.m3u8',
+        tvgId: 'MTV.in@SD',
+      );
+
+      expect(channel.xmltvId, 'MTV.in@SD');
+      expect(channel.tvgId, isNull);
+      expect(channel.country, 'IN');
+      expect(channel.resolvedEpgChannelId, 'MTV.in@SD');
+      expect(channel.epgLookupIds, ['MTV.in@SD', 'MTV.in']);
+    });
+
+    test('fromM3U still parses a numeric tvg-id', () {
+      final channel = IPTVChannel.fromM3U(
+        name: 'Channel',
+        url: 'https://cdn.example.com/live.m3u8',
+        tvgId: '101',
+      );
+
+      expect(channel.tvgId, 101);
+      expect(channel.xmltvId, '101');
+      expect(channel.resolvedEpgChannelId, '101');
+      expect(channel.epgLookupIds, ['101']);
+      expect(channel.country, isNull);
+    });
+
+    test('resolvedEpgChannelId falls back to id when no tvg-id is set', () {
+      const channel = IPTVChannel(
+        id: 'hash-1',
+        name: 'Channel',
+        streamUrl: 'https://cdn.example.com/live.m3u8',
+      );
+
+      expect(channel.resolvedEpgChannelId, 'hash-1');
+      expect(channel.epgLookupIds, ['hash-1']);
+    });
+  });
+
+  group('IPTVChannel group normalization', () {
+    test('fromM3U maps sentinel "Undefined" group to Uncategorized', () {
+      final channel = IPTVChannel.fromM3U(
+        name: 'Leaderboard Sports News',
+        url: 'https://cdn.example.com/live.m3u8',
+        group: 'Undefined',
+      );
+
+      expect(channel.group, 'Uncategorized');
+    });
+
+    test('fromM3U maps case-insensitive sentinel values', () {
+      for (final raw in ['undefined', 'UNDEFINED', 'N/A', 'none', 'null']) {
+        final channel = IPTVChannel.fromM3U(
+          name: 'Channel',
+          url: 'https://cdn.example.com/live.m3u8',
+          group: raw,
+        );
+        expect(channel.group, 'Uncategorized', reason: 'raw group: $raw');
+      }
+    });
+
+    test('fromM3U maps empty/whitespace group to Uncategorized', () {
+      final channel = IPTVChannel.fromM3U(
+        name: 'Channel',
+        url: 'https://cdn.example.com/live.m3u8',
+        group: '   ',
+      );
+
+      expect(channel.group, 'Uncategorized');
+    });
+
+    test('fromM3U preserves a real provider group', () {
+      final channel = IPTVChannel.fromM3U(
+        name: 'Channel',
+        url: 'https://cdn.example.com/live.m3u8',
+        group: 'Sports HD',
+      );
+
+      expect(channel.group, 'Sports HD');
+    });
+
+    test('fromM3U canonicalizes equivalent category labels', () {
+      final channels = [
+        IPTVChannel.fromM3U(
+          name: 'News title case',
+          url: 'https://cdn.example.com/news-title.m3u8',
+          group: 'News',
+        ),
+        IPTVChannel.fromM3U(
+          name: 'News lower case',
+          url: 'https://cdn.example.com/news-lower.m3u8',
+          group: ' news ',
+        ),
+        IPTVChannel.fromM3U(
+          name: 'News upper case',
+          url: 'https://cdn.example.com/news-upper.m3u8',
+          group: 'NEWS',
+        ),
+        IPTVChannel.fromM3U(
+          name: 'Nature category',
+          url: 'https://cdn.example.com/nature.m3u8',
+          group: 'nature   &   outdoors',
+        ),
+      ];
+
+      expect(channels.map((channel) => channel.group), [
+        'News',
+        'News',
+        'News',
+        'Nature & Outdoors',
+      ]);
+    });
+
+    test('fromJson maps sentinel group to Uncategorized', () {
+      final channel = IPTVChannel.fromJson(const {
+        'id': '1',
+        'name': 'Leaderboard Sports News',
+        'streamUrl': 'https://cdn.example.com/live.m3u8',
+        'group': 'Undefined',
+      });
+
+      expect(channel.group, 'Uncategorized');
+    });
+
+    test('fromJson preserves a real provider group', () {
+      final channel = IPTVChannel.fromJson(const {
+        'id': '1',
+        'name': 'Channel',
+        'streamUrl': 'https://cdn.example.com/live.m3u8',
+        'group': 'News',
+      });
+
+      expect(channel.group, 'News');
+    });
+
+    test('fromJson canonicalizes cached category labels', () {
+      final channel = IPTVChannel.fromJson(const {
+        'id': '1',
+        'name': 'Channel',
+        'streamUrl': 'https://cdn.example.com/live.m3u8',
+        'group': '  horror   &   sci-fi ',
+      });
+
+      expect(channel.group, 'Horror & Sci-Fi');
+    });
+  });
+}

@@ -1,0 +1,297 @@
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
+import 'package:equatable/equatable.dart';
+import 'package:platform_worker_jobs/platform_worker_jobs.dart';
+
+import '../provider_health.dart';
+import '../provider_health_recorder.dart';
+
+/// Result of Xtream Codes `player_api.php` auth (no `action` param).
+class XtreamAuthResult extends Equatable {
+  const XtreamAuthResult({
+    required this.isAuthenticated,
+    required this.status,
+    this.expiresAt,
+    this.maxConnections,
+    this.activeConnections,
+  });
+
+  final bool isAuthenticated;
+  final String status;
+  final DateTime? expiresAt;
+  final int? maxConnections;
+  final int? activeConnections;
+
+  @override
+  List<Object?> get props => [
+    isAuthenticated,
+    status,
+    expiresAt,
+    maxConnections,
+    activeConnections,
+  ];
+}
+
+class XtreamCategory extends Equatable {
+  const XtreamCategory({required this.id, required this.name});
+
+  final String id;
+  final String name;
+
+  @override
+  List<Object?> get props => [id, name];
+}
+
+class XtreamLiveStream extends Equatable {
+  const XtreamLiveStream({
+    required this.streamId,
+    required this.name,
+    this.streamIcon,
+    this.categoryId,
+    this.epgChannelId,
+  });
+
+  final int streamId;
+  final String name;
+  final String? streamIcon;
+  final String? categoryId;
+  final String? epgChannelId;
+
+  @override
+  List<Object?> get props => [
+    streamId,
+    name,
+    streamIcon,
+    categoryId,
+    epgChannelId,
+  ];
+}
+
+class XtreamVodStream extends Equatable {
+  const XtreamVodStream({
+    required this.streamId,
+    required this.name,
+    this.streamIcon,
+    this.categoryId,
+    this.containerExtension,
+  });
+
+  final int streamId;
+  final String name;
+  final String? streamIcon;
+  final String? categoryId;
+  final String? containerExtension;
+
+  @override
+  List<Object?> get props => [
+    streamId,
+    name,
+    streamIcon,
+    categoryId,
+    containerExtension,
+  ];
+}
+
+class XtreamEpgListing extends Equatable {
+  const XtreamEpgListing({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.start,
+    required this.end,
+    required this.streamId,
+  });
+
+  final String id;
+  final String title;
+  final String description;
+  final DateTime start;
+  final DateTime end;
+  final int streamId;
+
+  @override
+  List<Object?> get props => [id, title, description, start, end, streamId];
+}
+
+/// Xtream Codes `player_api.php` client. Wire protocol per the
+/// widely-deployed Xtream Codes panel API (auth via query params, JSON
+/// responses, base64-encoded EPG title/description).
+///
+/// Always builds full absolute URLs from [serverUrl] rather than relying on
+/// the injected [Dio]'s `baseUrl` — the same convention
+/// `M3UParserService._fetchAndParse` uses, since a single shared [Dio] may
+/// serve multiple sources with different servers.
+class XtreamClient {
+  XtreamClient({
+    required Dio dio,
+    required String serverUrl,
+    required String username,
+    required String password,
+    ProviderHealthTracker? healthTracker,
+    String? sourceId,
+  }) : _dio = dio,
+       _serverUrl = serverUrl.endsWith('/')
+           ? serverUrl.substring(0, serverUrl.length - 1)
+           : serverUrl,
+       _username = username,
+       _password = password,
+       _healthTracker = healthTracker,
+       _sourceId = sourceId;
+
+  final Dio _dio;
+  final String _serverUrl;
+  final String _username;
+  final String _password;
+
+  /// When both [_healthTracker] and [_sourceId] are non-null, every HTTP
+  /// call this client makes records a [ProviderHealthSample] on the
+  /// tracker (CV-012). Left null in call sites that predate CV-012
+  /// slice-2 or don't need health tracking.
+  final ProviderHealthTracker? _healthTracker;
+  final String? _sourceId;
+
+  Future<T> _recorded<T>(Future<T> Function() body) =>
+      recordFetch<T>(body: body, tracker: _healthTracker, sourceId: _sourceId);
+
+  Map<String, dynamic> _baseParams([Map<String, dynamic>? extra]) => {
+    'username': _username,
+    'password': _password,
+    ...?extra,
+  };
+
+  Future<XtreamAuthResult> authenticate() => _recorded(() async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '$_serverUrl/player_api.php',
+      queryParameters: _baseParams(),
+    );
+    final userInfo = response.data?['user_info'] as Map<String, dynamic>?;
+    final status = userInfo?['status'] as String? ?? 'Unknown';
+    final auth = userInfo?['auth'];
+    return XtreamAuthResult(
+      isAuthenticated: auth == 1 || auth == '1',
+      status: status,
+      expiresAt: _unixTimestamp(userInfo?['exp_date']),
+      maxConnections: _integer(userInfo?['max_connections']),
+      activeConnections: _integer(userInfo?['active_cons']),
+    );
+  });
+
+  Future<List<XtreamCategory>> getLiveCategories() => _recorded(() async {
+    final response = await _dio.get<Object>(
+      '$_serverUrl/player_api.php',
+      queryParameters: _baseParams({'action': 'get_live_categories'}),
+      options: Options(responseType: ResponseType.plain),
+    );
+    final payload = await _decodeListPayload(response.data);
+    return payload
+        .cast<Map<String, dynamic>>()
+        .map(
+          (json) => XtreamCategory(
+            id: json['category_id'].toString(),
+            name: json['category_name']?.toString().trim().isNotEmpty == true
+                ? json['category_name'].toString().trim()
+                : 'Uncategorized',
+          ),
+        )
+        .toList(growable: false);
+  });
+
+  Future<List<XtreamLiveStream>> getLiveStreams() => _recorded(() async {
+    final response = await _dio.get<Object>(
+      '$_serverUrl/player_api.php',
+      queryParameters: _baseParams({'action': 'get_live_streams'}),
+      options: Options(responseType: ResponseType.plain),
+    );
+    final payload = await _decodeListPayload(response.data);
+    return payload
+        .cast<Map<String, dynamic>>()
+        .map(
+          (json) => XtreamLiveStream(
+            streamId: json['stream_id'] as int,
+            name: json['name'] as String,
+            streamIcon: json['stream_icon'] as String?,
+            categoryId: json['category_id'] as String?,
+            epgChannelId: json['epg_channel_id'] as String?,
+          ),
+        )
+        .toList();
+  });
+
+  Future<List<XtreamVodStream>> getVodStreams() => _recorded(() async {
+    final response = await _dio.get<List<dynamic>>(
+      '$_serverUrl/player_api.php',
+      queryParameters: _baseParams({'action': 'get_vod_streams'}),
+    );
+    return (response.data ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(
+          (json) => XtreamVodStream(
+            streamId: json['stream_id'] as int,
+            name: json['name'] as String,
+            streamIcon: json['stream_icon'] as String?,
+            categoryId: json['category_id'] as String?,
+            containerExtension: json['container_extension'] as String?,
+          ),
+        )
+        .toList();
+  });
+
+  Future<List<XtreamEpgListing>> getShortEpg({
+    required int streamId,
+    int limit = 4,
+  }) => _recorded(() async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '$_serverUrl/player_api.php',
+      queryParameters: _baseParams({
+        'action': 'get_short_epg',
+        'stream_id': streamId,
+        'limit': limit,
+      }),
+    );
+    final listings =
+        response.data?['epg_listings'] as List<dynamic>? ?? const [];
+    return listings.cast<Map<String, dynamic>>().map((json) {
+      return XtreamEpgListing(
+        id: json['id'] as String,
+        title: utf8.decode(base64.decode(json['title'] as String)),
+        description: utf8.decode(base64.decode(json['description'] as String)),
+        start: DateTime.parse(
+          '${(json['start'] as String).replaceFirst(' ', 'T')}Z',
+        ),
+        end: DateTime.parse(
+          '${(json['end'] as String).replaceFirst(' ', 'T')}Z',
+        ),
+        streamId: int.parse(json['stream_id'] as String),
+      );
+    }).toList();
+  });
+
+  String liveStreamUrl(int streamId, {String extension = 'm3u8'}) =>
+      '$_serverUrl/live/$_username/$_password/$streamId.$extension';
+
+  String vodStreamUrl(int streamId, String containerExtension) =>
+      '$_serverUrl/movie/$_username/$_password/$streamId.$containerExtension';
+
+  static int? _integer(Object? value) =>
+      value is int ? value : int.tryParse(value?.toString() ?? '');
+
+  static DateTime? _unixTimestamp(Object? value) {
+    final seconds = _integer(value);
+    if (seconds == null || seconds <= 0) return null;
+    return DateTime.fromMillisecondsSinceEpoch(
+      seconds * Duration.millisecondsPerSecond,
+      isUtc: true,
+    );
+  }
+
+  static Future<List<dynamic>> _decodeListPayload(Object? payload) {
+    if (payload is List<dynamic>) return Future.value(payload);
+    final text = payload?.toString() ?? '[]';
+    return const AiroWorkerExecutor().run(
+      debugName: 'xtream_decode_list_payload',
+      kind: AiroWorkerJobKind.playlistImport,
+      computation: () => jsonDecode(text) as List<dynamic>,
+    );
+  }
+}

@@ -1,0 +1,308 @@
+import 'package:feature_mind/src/export/application/meeting_export_service.dart';
+import 'package:feature_mind/src/mind_service.dart';
+import 'package:feature_mind/src/whisper/api/meetings.dart' as rust;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// `MindService` isn't an interface — it's mocked directly, same as
+/// `mind_service_test.dart` mocks its own collaborators (`fake_bridges.dart`)
+/// rather than standing up the real Rust bridge.
+class MockMindService extends Mock implements MindService {}
+
+rust.MeetingRecord _meeting({
+  required String id,
+  String title = 'Standup',
+  int recordedAtSeconds = 1755000000,
+  String transcript = 'the flat transcript',
+  String minutes = '',
+  List<rust.MeetingDecisionRecord> decisions = const [],
+  List<rust.MeetingActionItemRecord> actionItems = const [],
+  List<rust.MeetingMetricRecord> metrics = const [],
+}) => rust.MeetingRecord(
+  id: id,
+  title: title,
+  recordedAt: BigInt.from(recordedAtSeconds),
+  transcript: transcript,
+  minutes: minutes,
+  model: 'qwen',
+  decisions: decisions,
+  actionItems: actionItems,
+  metrics: metrics,
+);
+
+rust.TranscriptDocumentRecord _doc({
+  required String meetingId,
+  List<rust.TranscriptSegmentRecord> segments = const [],
+}) => rust.TranscriptDocumentRecord(
+  meetingId: meetingId,
+  audioPath: '/tmp/$meetingId.wav',
+  modelVersion: 'whisper-multilingual',
+  segments: segments,
+);
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late MockMindService mind;
+  late MeetingExportService service;
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    mind = MockMindService();
+    service = MeetingExportService(mind);
+  });
+
+  group('exportMeeting', () {
+    test('returns null when the meeting no longer exists', () async {
+      when(() => mind.meeting('gone')).thenAnswer((_) async => null);
+      final result = await service.exportMeeting('gone');
+      expect(result, isNull);
+    });
+
+    test('uses seconds recordedAt and m{id} ms for frontmatter date', () async {
+      when(() => mind.meeting('m1755000000123')).thenAnswer(
+        (_) async => _meeting(
+          id: 'm1755000000123',
+          recordedAtSeconds: 1755000000,
+        ),
+      );
+      when(
+        () => mind.transcriptDocument('m1755000000123'),
+      ).thenAnswer((_) async => null);
+
+      final bundle = await service.exportMeeting('m1755000000123');
+
+      expect(bundle, isNotNull);
+      final transcript = bundle!.files['transcript.md']!;
+      expect(transcript, contains('date: 2025-08-'));
+      expect(transcript, isNot(contains('1970-01-')));
+    });
+
+    test('replaces generic title from transcript on export', () async {
+      when(() => mind.meeting('m1')).thenAnswer(
+        (_) async => _meeting(
+          id: 'm1',
+          title: 'Meeting 2026-08-23 03:29:45.987999',
+          transcript:
+              'Electric or any kind of energy I would say. There are kinetic batteries.',
+        ),
+      );
+      when(() => mind.transcriptDocument('m1')).thenAnswer((_) async => null);
+
+      final bundle = await service.exportMeeting('m1');
+
+      expect(bundle!.files['transcript.md'], contains('Electric or any kind'));
+      expect(
+        bundle.files['transcript.md'],
+        isNot(contains('Meeting 2026-08-23 03:29')),
+      );
+    });
+
+    test(
+      'uses timestamped segments when a transcript document exists',
+      () async {
+        when(
+          () => mind.meeting('m1'),
+        ).thenAnswer((_) async => _meeting(id: 'm1'));
+        when(() => mind.transcriptDocument('m1')).thenAnswer(
+          (_) async => _doc(
+            meetingId: 'm1',
+            segments: [
+              rust.TranscriptSegmentRecord(
+                id: 's1',
+                startMs: BigInt.zero,
+                endMs: BigInt.from(2000),
+                text: 'Hello team.',
+              ),
+              rust.TranscriptSegmentRecord(
+                id: 's2',
+                startMs: BigInt.from(2000),
+                endMs: BigInt.from(5000),
+                text: 'Let’s begin.',
+              ),
+            ],
+          ),
+        );
+
+        final bundle = await service.exportMeeting('m1');
+
+        expect(bundle, isNotNull);
+        expect(bundle!.folderName, contains('standup'));
+        final transcript = bundle.files['transcript.md']!;
+        expect(transcript, contains('[00:00:00] Hello team.'));
+        expect(transcript, contains('[00:00:02] Let’s begin.'));
+        // The flat MeetingRecord.transcript is not used when segments exist.
+        expect(transcript, isNot(contains('the flat transcript')));
+      },
+    );
+
+    test(
+      'falls back to the flat transcript when no document is stored',
+      () async {
+        when(
+          () => mind.meeting('m2'),
+        ).thenAnswer((_) async => _meeting(id: 'm2'));
+        when(() => mind.transcriptDocument('m2')).thenAnswer((_) async => null);
+
+        final bundle = await service.exportMeeting('m2');
+
+        expect(bundle, isNotNull);
+        final transcript = bundle!.files['transcript.md']!;
+        expect(transcript, contains('the flat transcript'));
+        expect(transcript, isNot(contains('[00:')));
+        // No document -> no derivable duration.
+        expect(transcript, isNot(contains('duration:')));
+      },
+    );
+
+    test('includes mom.md when the meeting record carries minutes', () async {
+      when(() => mind.meeting('m3')).thenAnswer(
+        (_) async => _meeting(
+          id: 'm3',
+          minutes: '## Summary\n\nTeam aligned on the release date.',
+        ),
+      );
+      when(() => mind.transcriptDocument('m3')).thenAnswer((_) async => null);
+
+      final bundle = await service.exportMeeting('m3');
+
+      expect(bundle!.files.keys, containsAll(['transcript.md', 'mom.md']));
+      expect(
+        bundle.files['mom.md'],
+        contains('Team aligned on the release date'),
+      );
+    });
+
+    test('omits mom.md when minutes are empty', () async {
+      when(
+        () => mind.meeting('m4'),
+      ).thenAnswer((_) async => _meeting(id: 'm4'));
+      when(() => mind.transcriptDocument('m4')).thenAnswer((_) async => null);
+
+      final bundle = await service.exportMeeting('m4');
+
+      expect(bundle!.files.keys, ['transcript.md']);
+    });
+
+    test('includes structured action items in mom.md when minutes have no '
+        'Action Items section', () async {
+      when(() => mind.meeting('m5')).thenAnswer(
+        (_) async => _meeting(
+          id: 'm5',
+          minutes: '## Summary\n\nShip the IR UI.',
+          actionItems: const [
+            rust.MeetingActionItemRecord(
+              id: 'a0',
+              task: 'Wire evidence timestamps',
+              owner: 'Priya',
+              due: 'Friday',
+              status: rust.MeetingActionStatus.open,
+              evidenceSegmentIds: ['s2'],
+            ),
+          ],
+        ),
+      );
+      when(() => mind.transcriptDocument('m5')).thenAnswer((_) async => null);
+
+      final bundle = await service.exportMeeting('m5');
+
+      expect(bundle!.files.keys, containsAll(['transcript.md', 'mom.md']));
+      final mom = bundle.files['mom.md']!;
+      expect(mom, contains('## Action Items'));
+      expect(mom, contains('Wire evidence timestamps'));
+      expect(mom, contains('Priya'));
+      expect(mom, contains('Friday'));
+      expect(mom, contains('Open'));
+    });
+
+    test(
+      'writes action-items.md when minutes are empty but IR actions exist',
+      () async {
+        when(() => mind.meeting('m6')).thenAnswer(
+          (_) async => _meeting(
+            id: 'm6',
+            actionItems: const [
+              rust.MeetingActionItemRecord(
+                id: 'a0',
+                task: 'Follow up with design',
+                status: rust.MeetingActionStatus.inProgress,
+                evidenceSegmentIds: [],
+              ),
+            ],
+          ),
+        );
+        when(() => mind.transcriptDocument('m6')).thenAnswer((_) async => null);
+
+        final bundle = await service.exportMeeting('m6');
+
+        expect(
+          bundle!.files.keys,
+          containsAll(['transcript.md', 'action-items.md']),
+        );
+        expect(bundle.files.containsKey('mom.md'), isFalse);
+        expect(
+          bundle.files['action-items.md'],
+          contains('Follow up with design'),
+        );
+        expect(bundle.files['action-items.md'], contains('In progress'));
+      },
+    );
+
+    test(
+      'renders correctly even past the off-main isolate threshold',
+      () async {
+        final longText = 'word ' * 20000; // well past 50 KB
+        when(
+          () => mind.meeting('big'),
+        ).thenAnswer((_) async => _meeting(id: 'big', transcript: longText));
+        when(
+          () => mind.transcriptDocument('big'),
+        ).thenAnswer((_) async => null);
+
+        final bundle = await service.exportMeeting('big');
+
+        expect(bundle, isNotNull);
+        expect(bundle!.files['transcript.md'], contains(longText.trim()));
+      },
+    );
+  });
+
+  group('exportMeetings (batch)', () {
+    test(
+      'skips meetings that no longer exist, keeps the rest in order',
+      () async {
+        when(
+          () => mind.meeting('a'),
+        ).thenAnswer((_) async => _meeting(id: 'a', title: 'First'));
+        when(() => mind.transcriptDocument('a')).thenAnswer((_) async => null);
+        when(() => mind.meeting('missing')).thenAnswer((_) async => null);
+        when(
+          () => mind.meeting('b'),
+        ).thenAnswer((_) async => _meeting(id: 'b', title: 'Second'));
+        when(() => mind.transcriptDocument('b')).thenAnswer((_) async => null);
+
+        final bundles = await service.exportMeetings(['a', 'missing', 'b']);
+
+        expect(bundles, hasLength(2));
+        expect(bundles[0].folderName, contains('first'));
+        expect(bundles[1].folderName, contains('second'));
+      },
+    );
+
+    test('empty id list returns no bundles and touches nothing', () async {
+      final bundles = await service.exportMeetings(const []);
+      expect(bundles, isEmpty);
+      verifyNever(() => mind.meeting(any()));
+    });
+
+    test(
+      'all-missing ids return an empty batch rather than throwing',
+      () async {
+        when(() => mind.meeting('x')).thenAnswer((_) async => null);
+        final bundles = await service.exportMeetings(['x']);
+        expect(bundles, isEmpty);
+      },
+    );
+  });
+}

@@ -1,0 +1,918 @@
+name: Release Orchestrator
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'airo-tv-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version label, for example v0.0.7'
+        required: true
+        default: 'v0.0.7'
+      build_name:
+        description: 'Android versionName, for example 0.0.7'
+        required: true
+        default: '0.0.7'
+      build_number:
+        description: 'Android versionCode shared by Android artifacts'
+        required: true
+        default: '12'
+      release_ref:
+        description: 'Git ref to release; must be based on origin/main'
+        required: true
+        default: 'main'
+      release_branch:
+        description: 'Release branch to create/update from release_ref'
+        required: true
+        default: 'release/v0.0.7'
+      dry_run:
+        description: 'Build and upload workflow artifacts without public/store publishing'
+        required: true
+        default: true
+        type: boolean
+      publish_github_release:
+        description: 'Publish GitHub Release assets when dry_run is false'
+        required: true
+        default: false
+        type: boolean
+      github_release_mode:
+        description: 'Create GitHub Release as draft or published when publishing is enabled'
+        required: true
+        default: draft
+        type: choice
+        options:
+          - draft
+          - published
+      production_signing:
+        description: 'Require production Android signing and Firebase secrets'
+        required: true
+        default: false
+        type: boolean
+      tv_play_track:
+        description: 'Optional TV Play upload track when dry_run is false'
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - internal
+          - alpha
+          - beta
+          - production
+      mobile_play_track:
+        description: 'Optional mobile/tablet Play upload track when dry_run is false'
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - internal
+          - alpha
+          - beta
+          - production
+      firebase_distribution:
+        description: 'Optional Firebase App Distribution upload mode when dry_run is false'
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - upload
+      mobile_firebase_app_id:
+        description: 'Firebase App Distribution app ID for the selected mobile/tablet profile'
+        required: false
+        default: ''
+      mobile_firebase_tester_groups:
+        description: 'Comma-separated Firebase tester groups for mobile/tablet QA'
+        required: false
+        default: ''
+      tv_firebase_app_id:
+        description: 'Firebase App Distribution app ID for TV'
+        required: false
+        default: ''
+      tv_firebase_tester_groups:
+        description: 'Comma-separated Firebase tester groups for TV QA'
+        required: false
+        default: ''
+      mobile_profile:
+        description: 'Optional mobile/tablet profiles to build'
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - full
+          - coins
+          - full-and-coins
+      macos_profile:
+        description: 'Optional macOS profile to build'
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - tv
+      macos_require_notarization:
+        description: 'Fail macOS leg unless Developer ID signing and notarization succeed'
+        required: true
+        default: false
+        type: boolean
+      qualification_mode:
+        description: 'Qualification report mode for top-level summary'
+        required: true
+        default: internal
+        type: choice
+        options:
+          - internal
+          - public
+
+concurrency:
+  group: v2-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEFAULT_VERSION: v0.0.7
+  DEFAULT_BUILD_NAME: 0.0.7
+  DEFAULT_BUILD_NUMBER: '12'
+
+jobs:
+  prepare:
+    name: Prepare v2 release context
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      build_name: ${{ steps.release.outputs.build_name }}
+      build_number: ${{ steps.release.outputs.build_number }}
+      release_ref: ${{ steps.release.outputs.release_ref }}
+      release_branch: ${{ steps.release.outputs.release_branch }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      dry_run: ${{ steps.release.outputs.dry_run }}
+      publish_github_release: ${{ steps.release.outputs.publish_github_release }}
+      github_release_mode: ${{ steps.release.outputs.github_release_mode }}
+      production_signing: ${{ steps.release.outputs.production_signing }}
+      tv_play_track: ${{ steps.release.outputs.tv_play_track }}
+      mobile_play_track: ${{ steps.release.outputs.mobile_play_track }}
+      firebase_distribution: ${{ steps.release.outputs.firebase_distribution }}
+      mobile_firebase_app_id: ${{ steps.release.outputs.mobile_firebase_app_id }}
+      mobile_firebase_tester_groups: ${{ steps.release.outputs.mobile_firebase_tester_groups }}
+      tv_firebase_app_id: ${{ steps.release.outputs.tv_firebase_app_id }}
+      tv_firebase_tester_groups: ${{ steps.release.outputs.tv_firebase_tester_groups }}
+      mobile_profile: ${{ steps.release.outputs.mobile_profile }}
+      coins_profile: ${{ steps.release.outputs.coins_profile }}
+      macos_profile: ${{ steps.release.outputs.macos_profile }}
+      macos_require_notarization: ${{ steps.release.outputs.macos_require_notarization }}
+      qualification_mode: ${{ steps.release.outputs.qualification_mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_ref || github.ref }}
+
+      - name: Resolve and validate release ref
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NAME: ${{ inputs.build_name }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+          INPUT_RELEASE_REF: ${{ inputs.release_ref }}
+          INPUT_RELEASE_BRANCH: ${{ inputs.release_branch }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_PUBLISH_GITHUB_RELEASE: ${{ inputs.publish_github_release }}
+          INPUT_GITHUB_RELEASE_MODE: ${{ inputs.github_release_mode }}
+          INPUT_PRODUCTION_SIGNING: ${{ inputs.production_signing }}
+          INPUT_TV_PLAY_TRACK: ${{ inputs.tv_play_track }}
+          INPUT_MOBILE_PLAY_TRACK: ${{ inputs.mobile_play_track }}
+          INPUT_FIREBASE_DISTRIBUTION: ${{ inputs.firebase_distribution }}
+          INPUT_MOBILE_FIREBASE_APP_ID: ${{ inputs.mobile_firebase_app_id }}
+          INPUT_MOBILE_FIREBASE_TESTER_GROUPS: ${{ inputs.mobile_firebase_tester_groups }}
+          INPUT_TV_FIREBASE_APP_ID: ${{ inputs.tv_firebase_app_id }}
+          INPUT_TV_FIREBASE_TESTER_GROUPS: ${{ inputs.tv_firebase_tester_groups }}
+          INPUT_MOBILE_PROFILE: ${{ inputs.mobile_profile }}
+          INPUT_MACOS_PROFILE: ${{ inputs.macos_profile }}
+          INPUT_MACOS_REQUIRE_NOTARIZATION: ${{ inputs.macos_require_notarization }}
+          INPUT_QUALIFICATION_MODE: ${{ inputs.qualification_mode }}
+        run: |
+          git fetch origin main v1_bkp --tags
+
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME:-$DEFAULT_VERSION}}"
+          build_name="${INPUT_BUILD_NAME:-${version#v}}"
+          build_number="${INPUT_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-$DEFAULT_BUILD_NUMBER}}"
+          release_ref="${INPUT_RELEASE_REF:-$GITHUB_SHA}"
+          release_branch="${INPUT_RELEASE_BRANCH:-release/$version}"
+          dry_run="${INPUT_DRY_RUN:-true}"
+          publish_github_release="${INPUT_PUBLISH_GITHUB_RELEASE:-false}"
+          github_release_mode="${INPUT_GITHUB_RELEASE_MODE:-draft}"
+          production_signing="${INPUT_PRODUCTION_SIGNING:-false}"
+          tv_play_track="${INPUT_TV_PLAY_TRACK:-none}"
+          mobile_play_track="${INPUT_MOBILE_PLAY_TRACK:-none}"
+          firebase_distribution="${INPUT_FIREBASE_DISTRIBUTION:-none}"
+          mobile_firebase_app_id="${INPUT_MOBILE_FIREBASE_APP_ID:-}"
+          mobile_firebase_tester_groups="${INPUT_MOBILE_FIREBASE_TESTER_GROUPS:-}"
+          tv_firebase_app_id="${INPUT_TV_FIREBASE_APP_ID:-}"
+          tv_firebase_tester_groups="${INPUT_TV_FIREBASE_TESTER_GROUPS:-}"
+          # workflow_dispatch caps the number of inputs, so the Android
+          # application profiles share one selector instead of taking a field
+          # each. Split it back into the per-leg profiles the jobs consume.
+          mobile_selection="${INPUT_MOBILE_PROFILE:-none}"
+          case "$mobile_selection" in
+            none)
+              mobile_profile=none
+              coins_profile=none
+              ;;
+            full)
+              mobile_profile=full
+              coins_profile=none
+              ;;
+            coins)
+              mobile_profile=none
+              coins_profile=coins
+              ;;
+            full-and-coins)
+              mobile_profile=full
+              coins_profile=coins
+              ;;
+            *)
+              echo "::error::Unsupported mobile/tablet profile selection: $mobile_selection"
+              exit 1
+              ;;
+          esac
+          macos_profile="${INPUT_MACOS_PROFILE:-none}"
+          macos_require_notarization="${INPUT_MACOS_REQUIRE_NOTARIZATION:-false}"
+          qualification_mode="${INPUT_QUALIFICATION_MODE:-internal}"
+
+          if [ "$dry_run" = "true" ]; then
+            publish_github_release="false"
+            tv_play_track="none"
+            mobile_play_track="none"
+            firebase_distribution="none"
+          fi
+
+          case "$tv_play_track" in
+            none|internal|alpha|beta|production) ;;
+            *)
+              echo "::error::Unsupported TV Play track: $tv_play_track"
+              exit 1
+              ;;
+          esac
+
+          case "$mobile_play_track" in
+            none|internal|alpha|beta|production) ;;
+            *)
+              echo "::error::Unsupported mobile/tablet Play track: $mobile_play_track"
+              exit 1
+              ;;
+          esac
+
+          if [ "$mobile_profile" = "none" ] && [ "$mobile_play_track" != "none" ]; then
+            echo "::error::mobile_play_track requires mobile_profile to be full."
+            exit 1
+          fi
+
+          case "$firebase_distribution" in
+            none|upload) ;;
+            *)
+              echo "::error::Unsupported Firebase distribution mode: $firebase_distribution"
+              exit 1
+              ;;
+          esac
+
+          if [ "$firebase_distribution" = "upload" ]; then
+            if [ -z "$tv_firebase_app_id" ] || [ -z "$tv_firebase_tester_groups" ]; then
+              echo "::error::Firebase upload requires tv_firebase_app_id and tv_firebase_tester_groups."
+              exit 1
+            fi
+            if [ "$mobile_profile" != "none" ] && { [ -z "$mobile_firebase_app_id" ] || [ -z "$mobile_firebase_tester_groups" ]; }; then
+              echo "::error::Firebase upload with a mobile/tablet profile requires mobile_firebase_app_id and mobile_firebase_tester_groups."
+              exit 1
+            fi
+          fi
+
+          case "$macos_profile" in
+            none|tv) ;;
+            *)
+              echo "::error::Unsupported macOS profile: $macos_profile"
+              exit 1
+              ;;
+          esac
+
+          case "$github_release_mode" in
+            draft|published) ;;
+            *)
+              echo "::error::Unsupported github_release_mode: $github_release_mode"
+              exit 1
+              ;;
+          esac
+
+          if git rev-parse --verify "origin/$release_ref^{commit}" >/dev/null 2>&1; then
+            release_commit="$(git rev-parse "origin/$release_ref^{commit}")"
+          elif git rev-parse --verify "$release_ref^{commit}" >/dev/null 2>&1; then
+            release_commit="$(git rev-parse "$release_ref^{commit}")"
+          else
+            echo "::error::Cannot resolve release_ref: $release_ref"
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor origin/main "$release_commit"; then
+            echo "::error::Release ref $release_ref does not contain latest origin/main."
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "build_name=$build_name"
+            echo "build_number=$build_number"
+            echo "release_ref=$release_ref"
+            echo "release_branch=$release_branch"
+            echo "release_sha=$release_commit"
+            echo "dry_run=$dry_run"
+            echo "publish_github_release=$publish_github_release"
+            echo "github_release_mode=$github_release_mode"
+            echo "production_signing=$production_signing"
+            echo "tv_play_track=$tv_play_track"
+            echo "mobile_play_track=$mobile_play_track"
+            echo "firebase_distribution=$firebase_distribution"
+            echo "mobile_firebase_app_id=$mobile_firebase_app_id"
+            echo "mobile_firebase_tester_groups=$mobile_firebase_tester_groups"
+            echo "tv_firebase_app_id=$tv_firebase_app_id"
+            echo "tv_firebase_tester_groups=$tv_firebase_tester_groups"
+            echo "mobile_profile=$mobile_profile"
+            echo "coins_profile=$coins_profile"
+            echo "macos_profile=$macos_profile"
+            echo "macos_require_notarization=$macos_require_notarization"
+            echo "qualification_mode=$qualification_mode"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "# V2 release context"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Version | $version |"
+            echo "| Build name | $build_name |"
+            echo "| Build number | $build_number |"
+            echo "| Release ref | $release_ref |"
+            echo "| Release branch | $release_branch |"
+            echo "| Release SHA | $release_commit |"
+            echo "| Dry run | $dry_run |"
+            echo "| GitHub Release publish | $publish_github_release |"
+            echo "| GitHub Release mode | $github_release_mode |"
+            echo "| TV Play track | $tv_play_track |"
+            echo "| Mobile/tablet Play track | $mobile_play_track |"
+            echo "| Firebase distribution | $firebase_distribution |"
+            echo "| Mobile/tablet profile | $mobile_profile |"
+            echo "| Airo Coins profile | $coins_profile |"
+            echo "| macOS profile | $macos_profile |"
+            echo "| macOS notarization required | $macos_require_notarization |"
+            echo "| Qualification mode | $qualification_mode |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-contracts:
+    name: Validate release contracts
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+
+      - name: Validate release scripts and workflow syntax
+        run: |
+          ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' \
+            .github/workflows/release-orchestrator.yml \
+            .github/workflows/aika-stream-release.yml \
+            .github/workflows/airo-mobile-tablet-release.yml \
+            .github/workflows/airo-macos-release.yml
+          python3 -m py_compile \
+            scripts/check-build-profiles.py \
+            scripts/generate-release-manifest.py \
+            scripts/generate-release-qualification-report.py
+          scripts/check-build-profiles.py
+          scripts/test-generate-release-manifest.sh
+          scripts/test-generate-release-qualification-report.sh
+
+  mobile-tablet-release:
+    name: Mobile and tablet release leg
+    if: needs.prepare.outputs.mobile_profile != 'none'
+    needs: [prepare, release-contracts]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: ./.github/workflows/airo-mobile-tablet-release.yml
+    with:
+      profile: ${{ needs.prepare.outputs.mobile_profile }}
+      version: ${{ needs.prepare.outputs.version }}
+      build_name: ${{ needs.prepare.outputs.build_name }}
+      build_number: ${{ needs.prepare.outputs.build_number }}
+      release_ref: ${{ needs.prepare.outputs.release_ref }}
+      production_signing: ${{ needs.prepare.outputs.production_signing == 'true' }}
+      play_track: ${{ needs.prepare.outputs.mobile_play_track }}
+      firebase_distribution: ${{ needs.prepare.outputs.firebase_distribution }}
+      firebase_app_id: ${{ needs.prepare.outputs.mobile_firebase_app_id }}
+      firebase_tester_groups: ${{ needs.prepare.outputs.mobile_firebase_tester_groups }}
+    secrets: inherit
+
+  coins-release:
+    name: Airo Coins release leg
+    if: needs.prepare.outputs.coins_profile != 'none'
+    needs: [prepare, release-contracts]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: ./.github/workflows/airo-mobile-tablet-release.yml
+    with:
+      profile: ${{ needs.prepare.outputs.coins_profile }}
+      version: ${{ needs.prepare.outputs.version }}
+      build_name: ${{ needs.prepare.outputs.build_name }}
+      build_number: ${{ needs.prepare.outputs.build_number }}
+      release_ref: ${{ needs.prepare.outputs.release_ref }}
+      production_signing: ${{ needs.prepare.outputs.production_signing == 'true' }}
+      play_track: none
+      firebase_distribution: none
+    secrets: inherit
+
+  macos-release:
+    name: macOS release leg
+    if: needs.prepare.outputs.macos_profile != 'none'
+    needs: [prepare, release-contracts]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/airo-macos-release.yml
+    with:
+      profile: ${{ needs.prepare.outputs.macos_profile }}
+      version: ${{ needs.prepare.outputs.version }}
+      build_name: ${{ needs.prepare.outputs.build_name }}
+      build_number: ${{ needs.prepare.outputs.build_number }}
+      release_ref: ${{ needs.prepare.outputs.release_ref }}
+      release_branch: ${{ needs.prepare.outputs.release_branch }}
+      require_notarization: ${{ needs.prepare.outputs.macos_require_notarization == 'true' }}
+    secrets: inherit
+
+  tv-release:
+    name: TV release leg
+    needs: [prepare, release-contracts]
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: ./.github/workflows/aika-stream-release.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      build_name: ${{ needs.prepare.outputs.build_name }}
+      build_number: ${{ needs.prepare.outputs.build_number }}
+      release_ref: ${{ needs.prepare.outputs.release_ref }}
+      release_branch: ${{ needs.prepare.outputs.release_branch }}
+      publish_github_release: false
+      production_signing: ${{ needs.prepare.outputs.production_signing == 'true' }}
+      play_track: ${{ needs.prepare.outputs.tv_play_track }}
+      firebase_distribution: ${{ needs.prepare.outputs.firebase_distribution }}
+      firebase_app_id: ${{ needs.prepare.outputs.tv_firebase_app_id }}
+      firebase_tester_groups: ${{ needs.prepare.outputs.tv_firebase_tester_groups }}
+    secrets: inherit
+
+  release-summary:
+    name: V2 release summary
+    runs-on: ubuntu-latest
+    needs: [prepare, release-contracts, mobile-tablet-release, coins-release, macos-release, tv-release]
+    if: always()
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+
+      - name: Download TV release artifacts
+        if: needs.tv-release.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: airo-tv-release-${{ needs.prepare.outputs.version }}
+          path: release-artifacts/tv
+
+      - name: Download mobile/tablet release artifacts
+        if: needs.mobile-tablet-release.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: airo-mobile-tablet-${{ needs.prepare.outputs.mobile_profile }}-${{ needs.prepare.outputs.version }}
+          path: release-artifacts/mobile-tablet
+
+      - name: Download Airo Coins release artifacts
+        if: needs.coins-release.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: airo-mobile-tablet-${{ needs.prepare.outputs.coins_profile }}-${{ needs.prepare.outputs.version }}
+          path: release-artifacts/coins
+
+      - name: Download macOS release artifacts
+        if: needs.macos-release.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: airo-macos-${{ needs.prepare.outputs.macos_profile }}-${{ needs.prepare.outputs.version }}
+          path: release-artifacts/macos
+
+      - name: Generate TV qualification report
+        if: needs.tv-release.result == 'success'
+        env:
+          QUALIFICATION_MODE: ${{ needs.prepare.outputs.qualification_mode }}
+        run: |
+          manifest="$(find release-artifacts/tv -maxdepth 1 -name '*Release-Manifest.json' | head -n 1)"
+          if [ -z "$manifest" ]; then
+            echo "::error::TV release manifest was not found in downloaded artifacts."
+            exit 1
+          fi
+          scripts/generate-release-qualification-report.py \
+            --manifest "$manifest" \
+            --mode "$QUALIFICATION_MODE"
+
+      - name: Generate mobile/tablet qualification report
+        if: needs.mobile-tablet-release.result == 'success'
+        env:
+          QUALIFICATION_MODE: ${{ needs.prepare.outputs.qualification_mode }}
+        run: |
+          manifest="$(find release-artifacts/mobile-tablet -maxdepth 1 -name '*Release-Manifest.json' | head -n 1)"
+          if [ -z "$manifest" ]; then
+            echo "::error::Mobile/tablet release manifest was not found in downloaded artifacts."
+            exit 1
+          fi
+          scripts/generate-release-qualification-report.py \
+            --manifest "$manifest" \
+            --mode "$QUALIFICATION_MODE"
+
+      - name: Generate Airo Coins qualification report
+        if: needs.coins-release.result == 'success'
+        env:
+          QUALIFICATION_MODE: ${{ needs.prepare.outputs.qualification_mode }}
+        run: |
+          manifest="$(find release-artifacts/coins -maxdepth 1 -name '*Release-Manifest.json' | head -n 1)"
+          if [ -z "$manifest" ]; then
+            echo "::error::Airo Coins release manifest was not found in downloaded artifacts."
+            exit 1
+          fi
+          scripts/generate-release-qualification-report.py \
+            --manifest "$manifest" \
+            --mode "$QUALIFICATION_MODE"
+
+      - name: Upload top-level release evidence
+        if: needs.tv-release.result == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: v2-release-evidence-${{ needs.prepare.outputs.version }}
+          path: release-artifacts/
+          retention-days: 30
+
+      - name: Prepare GitHub Release assets
+        if: needs.tv-release.result == 'success' && needs.prepare.outputs.publish_github_release == 'true'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NAME: ${{ needs.prepare.outputs.build_name }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          RELEASE_REF: ${{ needs.prepare.outputs.release_ref }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          MOBILE_PROFILE: ${{ needs.prepare.outputs.mobile_profile }}
+          COINS_PROFILE: ${{ needs.prepare.outputs.coins_profile }}
+          MACOS_PROFILE: ${{ needs.prepare.outputs.macos_profile }}
+          TV_SIGNING_CERT: ${{ needs.tv-release.outputs.signing_cert }}
+          MOBILE_SIGNING_CERT: ${{ needs.mobile-tablet-release.outputs.signing_cert }}
+          COINS_SIGNING_CERT: ${{ needs.coins-release.outputs.signing_cert }}
+        run: |
+          rm -rf github-release-assets
+          mkdir -p github-release-assets
+
+          require_asset() {
+            if [ ! -f "$1" ]; then
+              echo "::error::Required release asset is missing: $1"
+              return 1
+            fi
+            cp "$1" github-release-assets/
+          }
+
+          require_asset "release-artifacts/tv/Airo-TV-${BUILD_NAME}.apk"
+          require_asset "release-artifacts/tv/Airo-TV-${BUILD_NAME}-arm64-v8a.apk"
+          require_asset "release-artifacts/tv/Airo-TV-${BUILD_NAME}-armeabi-v7a.apk"
+          require_asset "release-artifacts/tv/Airo-TV-${BUILD_NAME}-x86_64.apk"
+          require_asset "release-artifacts/tv/Airo-TV-${BUILD_NAME}-Play-Store.aab"
+
+          case "$MOBILE_PROFILE" in
+            none)
+              ;;
+            full)
+              require_asset "release-artifacts/mobile-tablet/Airo-${BUILD_NAME}-${BUILD_NUMBER}-arm64.apk"
+              require_asset "release-artifacts/mobile-tablet/Airo-${BUILD_NAME}-${BUILD_NUMBER}-Play-Store.aab"
+              ;;
+            *)
+              echo "::error::Unsupported mobile/tablet profile for release assets: $MOBILE_PROFILE"
+              exit 1
+              ;;
+          esac
+
+          case "$COINS_PROFILE" in
+            none)
+              ;;
+            coins)
+              require_asset "release-artifacts/coins/AiroCoins-${BUILD_NAME}-${BUILD_NUMBER}-arm64.apk"
+              require_asset "release-artifacts/coins/AiroCoins-${BUILD_NAME}-${BUILD_NUMBER}-Play-Store.aab"
+              ;;
+            *)
+              echo "::error::Unsupported Airo Coins profile for release assets: $COINS_PROFILE"
+              exit 1
+              ;;
+          esac
+
+          case "$MACOS_PROFILE" in
+            none)
+              ;;
+            tv)
+              require_asset "release-artifacts/macos/Airo-TV-${BUILD_NAME}-macOS.zip"
+              require_asset "release-artifacts/macos/Airo-TV-${BUILD_NAME}-macOS.dmg"
+              require_asset "release-artifacts/macos/homebrew/airo-tv.rb"
+              ;;
+            *)
+              echo "::error::Unsupported macOS profile for release assets: $MACOS_PROFILE"
+              exit 1
+              ;;
+          esac
+
+          scripts/generate-release-manifest.py \
+            --artifacts-dir github-release-assets \
+            --version "$BUILD_NAME" \
+            --build-number "$BUILD_NUMBER" \
+            --source-ref "$RELEASE_REF" \
+            --source-sha "$RELEASE_SHA" \
+            --workflow-name "$GITHUB_WORKFLOW" \
+            --workflow-run "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repository "$GITHUB_REPOSITORY"
+          mv github-release-assets/Release-Manifest.json "github-release-assets/Airo-${BUILD_NAME}-Release-Manifest.json"
+
+          describe_cert() {
+            case "$1" in
+              production) echo "production keystore (upgrades cleanly over prior production-signed releases)" ;;
+              dogfood-stable) echo "stable dogfood keystore (upgrades cleanly over other dogfood-signed builds, NOT over production-signed releases)" ;;
+              ephemeral-ci-validation|"") echo "ephemeral CI-validation keystore generated for this run only (will NOT install over any other RC/CI build; uninstall the previous build first)" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          notes="github-release-assets/Airo-${BUILD_NAME}-Release-Notes.md"
+          {
+            echo "# Airo ${BUILD_NAME}"
+            echo ""
+            echo "This v2 release publishes the selected Android and macOS profile artifacts produced by the release orchestrator."
+            echo ""
+            echo "## Included Artifacts"
+            echo ""
+            find github-release-assets -maxdepth 1 -type f \
+              \( -name '*.apk' -o -name '*.aab' -o -name '*.zip' -o -name '*.dmg' -o -name '*.rb' -o -name '*Release-Manifest.json' -o -name 'SHA256SUMS' \) \
+              -printf '- %f\n' | sort
+            echo ""
+            echo "## Signing"
+            echo ""
+            if [ -f "release-artifacts/tv/Airo-TV-${BUILD_NAME}.apk" ]; then
+              echo "- TV APK/AAB: $(describe_cert "$TV_SIGNING_CERT")"
+            fi
+            if [ "$MOBILE_PROFILE" != "none" ]; then
+              echo "- Mobile/tablet APK/AAB: $(describe_cert "$MOBILE_SIGNING_CERT")"
+            fi
+            if [ "$COINS_PROFILE" != "none" ]; then
+              echo "- Airo Coins APK/AAB: $(describe_cert "$COINS_SIGNING_CERT")"
+            fi
+            echo ""
+            echo "## Verification"
+            echo ""
+            echo "SHA256 checksums are published in the SHA256SUMS asset and mapped to profile metadata in Airo-${BUILD_NAME}-Release-Manifest.json."
+            echo ""
+            echo '```text'
+            cat github-release-assets/SHA256SUMS
+            echo '```'
+            echo ""
+            echo "## Distribution Notes"
+            echo ""
+            echo "- APK assets are for direct install and internal verification."
+            echo "- AAB assets are Google Play upload inputs."
+            echo "- macOS zip and DMG assets are direct-download artifacts."
+            echo "- airo-tv.rb is generated Homebrew Cask metadata for the macOS zip."
+            echo "- Store and Firebase uploads remain controlled by the credential-specific workflows."
+          } > "$notes"
+
+          ls -lh github-release-assets
+
+      - name: Publish GitHub Release
+        if: needs.tv-release.result == 'success' && needs.prepare.outputs.publish_github_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NAME: ${{ needs.prepare.outputs.build_name }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          GITHUB_RELEASE_MODE: ${{ needs.prepare.outputs.github_release_mode }}
+        run: |
+          notes="github-release-assets/Airo-${BUILD_NAME}-Release-Notes.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::Release notes were not generated: $notes"
+            exit 1
+          fi
+          draft_arg="--draft=false"
+          if [ "$GITHUB_RELEASE_MODE" = "draft" ]; then
+            draft_arg="--draft=true"
+          fi
+
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$VERSION" github-release-assets/* \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+            gh release edit "$VERSION" \
+              --title "Airo ${BUILD_NAME}" \
+              --notes-file "$notes" \
+              "$draft_arg" \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            args=(
+              release create "$VERSION" github-release-assets/*
+              --title "Airo ${BUILD_NAME}"
+              --target "$RELEASE_SHA"
+              --notes-file "$notes"
+              --repo "$GITHUB_REPOSITORY"
+            )
+            if [ "$GITHUB_RELEASE_MODE" = "draft" ]; then
+              args+=(--draft)
+            fi
+            gh "${args[@]}"
+          fi
+
+      - name: Write release summary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_NAME: ${{ needs.prepare.outputs.build_name }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          RELEASE_REF: ${{ needs.prepare.outputs.release_ref }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+          PUBLISH_GITHUB_RELEASE: ${{ needs.prepare.outputs.publish_github_release }}
+          GITHUB_RELEASE_MODE: ${{ needs.prepare.outputs.github_release_mode }}
+          TV_RESULT: ${{ needs.tv-release.result }}
+          MOBILE_RESULT: ${{ needs.mobile-tablet-release.result }}
+          MOBILE_PROFILE: ${{ needs.prepare.outputs.mobile_profile }}
+          COINS_RESULT: ${{ needs.coins-release.result }}
+          COINS_PROFILE: ${{ needs.prepare.outputs.coins_profile }}
+          MACOS_RESULT: ${{ needs.macos-release.result }}
+          MACOS_PROFILE: ${{ needs.prepare.outputs.macos_profile }}
+          MACOS_SIGNING_STATUS: ${{ needs.macos-release.outputs.signing_status }}
+          MACOS_NOTARIZATION_STATUS: ${{ needs.macos-release.outputs.notarization_status }}
+          TV_PLAY_TRACK: ${{ needs.prepare.outputs.tv_play_track }}
+          MOBILE_PLAY_TRACK: ${{ needs.prepare.outputs.mobile_play_track }}
+          FIREBASE_DISTRIBUTION: ${{ needs.prepare.outputs.firebase_distribution }}
+          TV_FIREBASE_STATUS: ${{ needs.tv-release.outputs.firebase_distribution_status }}
+          TV_FIREBASE_URL: ${{ needs.tv-release.outputs.firebase_distribution_url }}
+          MOBILE_FIREBASE_STATUS: ${{ needs.mobile-tablet-release.outputs.firebase_distribution_status }}
+          MOBILE_FIREBASE_URL: ${{ needs.mobile-tablet-release.outputs.firebase_distribution_url }}
+          CONTRACT_RESULT: ${{ needs.release-contracts.result }}
+        run: |
+          {
+            echo "# V2 release summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Version | $VERSION |"
+            echo "| Build name | $BUILD_NAME |"
+            echo "| Build number | $BUILD_NUMBER |"
+            echo "| Release ref | $RELEASE_REF |"
+            echo "| Release SHA | $RELEASE_SHA |"
+            echo "| Dry run | $DRY_RUN |"
+            echo "| GitHub Release publish | $PUBLISH_GITHUB_RELEASE |"
+            echo "| GitHub Release mode | $GITHUB_RELEASE_MODE |"
+            echo "| TV leg | $TV_RESULT |"
+            echo "| TV Play track | $TV_PLAY_TRACK |"
+            echo "| Mobile/tablet profile | $MOBILE_PROFILE |"
+            echo "| Mobile/tablet leg | $MOBILE_RESULT |"
+            echo "| Mobile/tablet Play track | $MOBILE_PLAY_TRACK |"
+            echo "| Airo Coins profile | $COINS_PROFILE |"
+            echo "| Airo Coins leg | $COINS_RESULT |"
+            echo "| macOS profile | $MACOS_PROFILE |"
+            echo "| macOS leg | $MACOS_RESULT |"
+            echo "| macOS signing | ${MACOS_SIGNING_STATUS:-none} |"
+            echo "| macOS notarization | ${MACOS_NOTARIZATION_STATUS:-none} |"
+            echo "| Firebase distribution | $FIREBASE_DISTRIBUTION |"
+            echo "| TV Firebase status | ${TV_FIREBASE_STATUS:-none} |"
+            echo "| Mobile/tablet Firebase status | ${MOBILE_FIREBASE_STATUS:-none} |"
+            echo "| Release contracts | $CONTRACT_RESULT |"
+            echo ""
+            echo "## Artifact evidence"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -d release-artifacts/tv ]; then
+            {
+              echo "### TV"
+              echo ""
+              find release-artifacts/tv -maxdepth 1 -type f -printf '- %f\n' | sort
+              echo ""
+              echo "TV artifacts include APK/AAB files, SHA256SUMS, release manifest, and an internal qualification report when generated by this orchestrator."
+              if [ -n "$TV_FIREBASE_URL" ]; then
+                echo "Firebase App Distribution result: $TV_FIREBASE_URL"
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "TV artifacts were not available because the TV leg result was $TV_RESULT." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -d release-artifacts/mobile-tablet ]; then
+            {
+              echo ""
+              echo "### Mobile/tablet"
+              echo ""
+              find release-artifacts/mobile-tablet -maxdepth 1 -type f -printf '- %f\n' | sort
+              echo ""
+              echo "Mobile/tablet artifacts include APK/AAB files, SHA256SUMS, release manifest, and an internal qualification report when generated by this orchestrator."
+              if [ -n "$MOBILE_FIREBASE_URL" ]; then
+                echo "Firebase App Distribution result: $MOBILE_FIREBASE_URL"
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$MOBILE_PROFILE" = "none" ]; then
+            echo "Mobile/tablet artifacts were not requested for this orchestrator run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Mobile/tablet artifacts were not available because the mobile/tablet leg result was $MOBILE_RESULT." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -d release-artifacts/coins ]; then
+            {
+              echo ""
+              echo "### Airo Coins"
+              echo ""
+              find release-artifacts/coins -maxdepth 1 -type f -printf '- %f\n' | sort
+              echo ""
+              echo "Airo Coins artifacts include APK/AAB files, SHA256SUMS, release manifest, and an internal qualification report when generated by this orchestrator."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$COINS_PROFILE" = "none" ]; then
+            echo "Airo Coins artifacts were not requested for this orchestrator run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Airo Coins artifacts were not available because the Airo Coins leg result was $COINS_RESULT." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -d release-artifacts/macos ]; then
+            {
+              echo ""
+              echo "### macOS"
+              echo ""
+              find release-artifacts/macos -maxdepth 2 -type f -printf '- %P\n' | sort
+              echo ""
+              echo "macOS artifacts include zip/DMG files, SHA256SUMS, release manifest, and generated Homebrew Cask metadata."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$MACOS_PROFILE" = "none" ]; then
+            echo "macOS artifacts were not requested for this orchestrator run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "macOS artifacts were not available because the macOS leg result was $MACOS_RESULT." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -d github-release-assets ]; then
+            {
+              echo ""
+              echo "### GitHub Release assets"
+              echo ""
+              find github-release-assets -maxdepth 1 -type f -printf '- %f\n' | sort
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PUBLISH_GITHUB_RELEASE" = "true" ]; then
+            echo "GitHub Release assets were requested but were not prepared." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Enforce orchestrator result
+        env:
+          TV_RESULT: ${{ needs.tv-release.result }}
+          MOBILE_RESULT: ${{ needs.mobile-tablet-release.result }}
+          MOBILE_PROFILE: ${{ needs.prepare.outputs.mobile_profile }}
+          COINS_RESULT: ${{ needs.coins-release.result }}
+          COINS_PROFILE: ${{ needs.prepare.outputs.coins_profile }}
+          MACOS_RESULT: ${{ needs.macos-release.result }}
+          MACOS_PROFILE: ${{ needs.prepare.outputs.macos_profile }}
+          CONTRACT_RESULT: ${{ needs.release-contracts.result }}
+        run: |
+          if [ "$CONTRACT_RESULT" != "success" ]; then
+            echo "::error::Release contract validation did not pass: $CONTRACT_RESULT"
+            exit 1
+          fi
+          if [ "$TV_RESULT" != "success" ]; then
+            echo "::error::TV release leg did not pass: $TV_RESULT"
+            exit 1
+          fi
+          if [ "$MOBILE_PROFILE" != "none" ] && [ "$MOBILE_RESULT" != "success" ]; then
+            echo "::error::Mobile/tablet release leg did not pass: $MOBILE_RESULT"
+            exit 1
+          fi
+          if [ "$COINS_PROFILE" != "none" ] && [ "$COINS_RESULT" != "success" ]; then
+            echo "::error::Airo Coins release leg did not pass: $COINS_RESULT"
+            exit 1
+          fi
+          if [ "$MACOS_PROFILE" != "none" ] && [ "$MACOS_RESULT" != "success" ]; then
+            echo "::error::macOS release leg did not pass: $MACOS_RESULT"
+            exit 1
+          fi

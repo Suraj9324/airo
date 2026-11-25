@@ -1,0 +1,31 @@
+[package]
+name = "airo_mind_cli"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform dev-loop and POC-2 offline pipeline: .m4a/.wav -> ASR -> meeting IR -> MoM -> eval gates. Not shipped product code -- see README.md."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "airo_mind_cli"
+path = "src/main.rs"
+
+[dependencies]
+airo_mind_audio = { path = "../airo_mind_audio" }
+airo_mind_core = { path = "../airo_mind_core" }
+airo_mind_diarize = { path = "../airo_mind_diarize" }
+airo_mind_eval = { path = "../airo_mind_eval" }
+airo_mind_meeting = { path = "../airo_mind_meeting" }
+airo_mind_transcript = { path = "../airo_mind_transcript" }
+# Both engines in one bin is an ODR conflict on Linux lld (duplicate ggml
+# symbols). macOS ld still links this for the local dev loop. Do not add this
+# package to `cargo test --workspace` / `cargo clippy --workspace` / Linux
+# `cargo build --release --workspace`. See README.md and rust/Cargo.toml
+# `default-members`.
+airo_mind_whisper = { path = "../airo_mind_whisper", features = ["whisper", "metal"] }
+airo_mind_llama = { path = "../airo_mind_llama", features = ["llama", "metal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

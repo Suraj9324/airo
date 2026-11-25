@@ -1,0 +1,487 @@
+import 'package:core_ui/core_ui.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'chess_game_screen_new.dart';
+import 'blackjack_screen.dart';
+import 'texas_holdem_screen.dart';
+import 'game_coming_soon_screen.dart';
+import '../../application/card_asset_manager.dart';
+import '../../domain/models/game_info.dart';
+import '../widgets/game_rules_dialog_unified.dart';
+import '../../../../shared/widgets/responsive_center.dart';
+
+/// Games hub screen - Mall-like balanced layout
+class GamesHubScreen extends ConsumerWidget {
+  const GamesHubScreen({super.key});
+
+  static const int _sectionPreviewLimit = 4;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sections = [
+      ...GameRegistry.availableByCategory.entries.map(
+        (entry) => _GameSection(
+          title: entry.key.displayName,
+          icon: entry.key.icon,
+          games: entry.value,
+        ),
+      ),
+      if (GameRegistry.comingSoon.isNotEmpty)
+        _GameSection(
+          title: 'Coming Soon',
+          icon: Icons.construction,
+          games: GameRegistry.comingSoon,
+        ),
+    ];
+
+    // No AppBar here - global AppBar is in AppShell
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: ResponsiveCenter(
+        maxWidth: ResponsiveBreakpoints.dashboardMaxWidth,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const AiroPageHeader(
+                title: 'Arena',
+                subtitle: 'Choose your game and start playing',
+              ),
+              const SizedBox(height: 24),
+
+              // Game categories in grid
+              ...sections.map((section) {
+                final previewGames = section.games.length > _sectionPreviewLimit
+                    ? section.games.take(_sectionPreviewLimit).toList()
+                    : section.games;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Category header
+                    Row(
+                      children: [
+                        Icon(section.icon, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          section.title,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const Spacer(),
+                        if (section.games.length > _sectionPreviewLimit)
+                          TextButton(
+                            key: ValueKey(
+                              'games_view_all_${_sectionKey(section.title)}',
+                            ),
+                            onPressed: () =>
+                                _showSectionSheet(context, ref, section),
+                            child: const Text('View All'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Games grid - responsive
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final columns = ResponsiveBreakpoints.getGridColumns(
+                          constraints.maxWidth,
+                          mobile: 2,
+                          tablet: 3,
+                          desktop: 4,
+                        );
+                        return GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: columns,
+                                crossAxisSpacing: 12,
+                                mainAxisSpacing: 12,
+                                childAspectRatio: columns <= 2 ? 0.92 : 1.12,
+                              ),
+                          itemCount: previewGames.length,
+                          itemBuilder: (context, index) {
+                            return AiroSurface(
+                              level: AiroSurfaceLevel.raised,
+                              padding: EdgeInsets.zero,
+                              child: _buildGameTile(
+                                context,
+                                ref,
+                                previewGames[index],
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                );
+              }),
+
+              // Quick stats
+              Text('Your Stats', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildStatCard(
+                      context,
+                      'Games Played',
+                      '0',
+                      Icons.sports_esports,
+                      Colors.blue,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildStatCard(
+                      context,
+                      'Wins',
+                      '0',
+                      Icons.emoji_events,
+                      Colors.amber,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGameTile(BuildContext context, WidgetRef ref, GameInfo game) {
+    // Use RepaintBoundary to prevent unnecessary repaints
+    final colorScheme = Theme.of(context).colorScheme;
+    return RepaintBoundary(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => _playGame(context, ref, game),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: const BoxDecoration(),
+            child: Opacity(
+              opacity: game.isAvailable ? 1.0 : 0.6,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Game icon and status
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: game.isAvailable
+                              ? game.difficulty.color.withValues(alpha: 0.1)
+                              : Colors.grey.withValues(alpha: 0.1),
+                          borderRadius: AiroVisualTokens.of(
+                            context,
+                          ).smallRadius,
+                        ),
+                        child: Icon(
+                          game.icon,
+                          size: 28,
+                          color: game.isAvailable
+                              ? game.difficulty.color
+                              : Colors.grey,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.info_outline, size: 18),
+                        onPressed: () {
+                          UnifiedGameRulesDialog.show(context, game);
+                        },
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Game name
+                  Text(
+                    game.name,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+
+                  // Game description
+                  Text(
+                    game.shortDescription,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colorScheme.primary.withValues(alpha: 0.64),
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const Spacer(),
+
+                  // Game info
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.person,
+                        size: 12,
+                        color: colorScheme.primary.withValues(alpha: 0.58),
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          game.playerCountDisplay,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: colorScheme.primary.withValues(alpha: 0.58),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+
+                  // Status badge
+                  if (!game.isAvailable)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'COMING SOON',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatCard(
+    BuildContext context,
+    String label,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Icon(icon, size: 32, color: color),
+            const SizedBox(height: 8),
+            Text(
+              value,
+              style: Theme.of(
+                context,
+              ).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _playGame(BuildContext context, WidgetRef ref, GameInfo game) {
+    if (!game.isAvailable) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => GameComingSoonScreen(game: game),
+        ),
+      );
+      return;
+    }
+
+    switch (game.id) {
+      case 'blackjack':
+        _playBlackjack(context, ref);
+        break;
+      case 'chess':
+        _playChess(context);
+        break;
+      case 'texas_holdem':
+        _playTexasHoldem(context, ref);
+        break;
+      default:
+        // Show coming soon screen for games under development
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => GameComingSoonScreen(game: game),
+          ),
+        );
+    }
+  }
+
+  void _playChess(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => const ChessGameScreenNew(),
+      isScrollControlled: true,
+      useSafeArea: true,
+    );
+  }
+
+  void _playBlackjack(BuildContext context, WidgetRef ref) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => const CardImagePreloader(
+          preloadAll: false,
+          child: BlackjackScreen(),
+        ),
+      ),
+    );
+  }
+
+  void _playTexasHoldem(BuildContext context, WidgetRef ref) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => const CardImagePreloader(
+          preloadAll: false,
+          child: TexasHoldemScreen(),
+        ),
+      ),
+    );
+  }
+
+  void _showSectionSheet(
+    BuildContext context,
+    WidgetRef ref,
+    _GameSection section,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return FractionallySizedBox(
+          heightFactor: 0.9,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.outlineVariant,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Icon(section.icon, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        section.title,
+                        style: theme.textTheme.titleLarge,
+                      ),
+                    ),
+                    Text(
+                      '${section.games.length} games',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Choose a game without leaving the Arena hub.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final columns = ResponsiveBreakpoints.getGridColumns(
+                        constraints.maxWidth,
+                        mobile: 2,
+                        tablet: 3,
+                        desktop: 4,
+                      );
+                      return GridView.builder(
+                        key: ValueKey(
+                          'games_section_sheet_${_sectionKey(section.title)}',
+                        ),
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: columns,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                          childAspectRatio: columns <= 2 ? 0.92 : 1.12,
+                        ),
+                        itemCount: section.games.length,
+                        itemBuilder: (context, index) {
+                          return _buildGameTile(
+                            context,
+                            ref,
+                            section.games[index],
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _sectionKey(String title) =>
+      title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+}
+
+class _GameSection {
+  const _GameSection({
+    required this.title,
+    required this.icon,
+    required this.games,
+  });
+
+  final String title;
+  final IconData icon;
+  final List<GameInfo> games;
+}

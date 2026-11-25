@@ -1,0 +1,105 @@
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:platform_media/platform_media.dart';
+import 'package:platform_player/platform_player.dart';
+
+void main() {
+  group('mapStreamingErrorToDiagnostic', () {
+    test('maps TimeoutException to a retryable network diagnostic', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        TimeoutException('Load timeout'),
+      );
+
+      expect(diagnostic.code, AiroPlaybackDiagnosticCode.networkUnavailable);
+      expect(diagnostic.retryEligible, isTrue);
+    });
+
+    test('distinguishes provider auth 401 from regional 403 denial', () {
+      final unauthorized = mapStreamingErrorToDiagnostic('HttpException: 401');
+      final forbidden = mapStreamingErrorToDiagnostic(
+        'PlatformException(VideoError, Exceeds error code, 403 Forbidden)',
+      );
+
+      expect(unauthorized.code, AiroPlaybackDiagnosticCode.providerAuthDenied);
+      expect(forbidden.code, AiroPlaybackDiagnosticCode.regionRestricted);
+      expect(unauthorized.retryEligible, isFalse);
+      expect(forbidden.retryEligible, isFalse);
+    });
+
+    test('maps a 404-bearing message to non-retryable provider not-found', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        'source error: 404 not found',
+      );
+
+      expect(diagnostic.code, AiroPlaybackDiagnosticCode.providerNotFound);
+      expect(diagnostic.retryEligible, isFalse);
+    });
+
+    test('maps a 5xx-bearing message to a retryable provider server error', () {
+      final diagnostic = mapStreamingErrorToDiagnostic('upstream 502 error');
+
+      expect(diagnostic.code, AiroPlaybackDiagnosticCode.providerServerError);
+      expect(diagnostic.retryEligible, isTrue);
+    });
+
+    test('maps a codec/format message to non-retryable codec diagnostic', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        'MediaCodecVideoRenderer error, unsupported codec',
+      );
+
+      expect(diagnostic.code, AiroPlaybackDiagnosticCode.codecUnsupported);
+      expect(diagnostic.retryEligible, isFalse);
+    });
+
+    test('maps an embedded dai.google.com URL to ad-insertion unsupported', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        Exception(
+          'Failed to load https://dai.google.com/ondemand/v1/dash/content/123/vid/abc/stream',
+        ),
+      );
+
+      expect(
+        diagnostic.code,
+        AiroPlaybackDiagnosticCode.adInsertionUnsupported,
+      );
+      expect(diagnostic.retryEligible, isFalse);
+      expect(diagnostic.userMessage, isNot(contains('dai.google')));
+    });
+
+    test('maps the stable ad-insertion token from the streaming service', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        'ad_insertion_unsupported',
+      );
+
+      expect(
+        diagnostic.code,
+        AiroPlaybackDiagnosticCode.adInsertionUnsupported,
+      );
+    });
+
+    test('falls back to an unknown retryable diagnostic for opaque errors', () {
+      final diagnostic = mapStreamingErrorToDiagnostic('boom');
+
+      expect(diagnostic.code, AiroPlaybackDiagnosticCode.unknown);
+      expect(diagnostic.retryEligible, isTrue);
+    });
+
+    test('leaves ordinary HLS failures on the existing unknown path', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        Exception('Failed to load https://media.example.com/live.m3u8'),
+      );
+
+      expect(diagnostic.code, AiroPlaybackDiagnosticCode.unknown);
+    });
+
+    test('never includes the raw error text verbatim in technical detail', () {
+      final diagnostic = mapStreamingErrorToDiagnostic(
+        'http://user:secret@host/live/pw/1.ts?token=abc failed: 403',
+      );
+
+      expect(diagnostic.technicalDetail, isNot(contains('secret')));
+      expect(diagnostic.technicalDetail, isNot(contains('token=abc')));
+    });
+  });
+}

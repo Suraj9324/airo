@@ -1,0 +1,40 @@
+# Aika Stream / Aika Stream Architecture
+
+The Android TV player is the TV variant of Airo. The first Google Play listing
+ships it as **Aika Stream** with package name `com.developerscoffee.tv.midas`.
+GitHub v0.0.6 artifacts were published as Aika Stream (`io.airo.app.tv`).
+
+## High-Level Flow
+
+```text
+Flutter UI
+  ↓
+TV Router and IPTV Screens
+  ↓
+Playlist Parser and Search
+  ↓
+Playback Controller
+  ↓
+Platform Player / Cast Controller
+  ↓
+User-supplied Playlist Provider or Cast Receiver
+```
+
+## Components
+
+| Component | Responsibility |
+| --- | --- |
+| Flutter UI | TV-first screens, focusable controls, accessibility labels, fallback mobile layout. |
+| TV Router | Limits the TV variant to IPTV-focused routes. |
+| IPTV feature package | Playlist import, channel list, search, playback UI, Cast UI. |
+| Platform player package | Playback and Cast controller abstractions. |
+| Android TV manifest | Package name, launcher, Leanback launcher, TV feature metadata. |
+| Release workflow | Builds APK/AAB artifacts, verifies metadata, publishes checksums and release notes. |
+
+## Release Boundary
+
+Aika Stream is released from `v2`. If work is not explicitly for v2, it should not be included in the Aika Stream release branch.
+
+## Data Boundary
+
+Aika Stream does not host IPTV content. Playlist URLs and playback targets originate from the user or from playlist files supplied by the user.

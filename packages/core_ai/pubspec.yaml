@@ -1,0 +1,36 @@
+name: core_ai
+description: "Core AI package: LLM abstractions, prompt management, and AI utilities"
+version: 0.0.1
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+  flutter: ">=3.44.4"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  core_domain:
+    path: ../core_domain
+  core_native:
+    path: ../core_native
+  core_workers:
+    path: ../core_workers
+  dio: ^5.10.0
+  meta: ^1.18.0
+  path: 1.9.1
+  path_provider: ^2.1.6
+  crypto: ^3.0.3
+  platform_downloads:
+    path: ../platform_downloads
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+  mocktail: ^1.0.5
+
+flutter:
+  plugin:
+    platforms: {}

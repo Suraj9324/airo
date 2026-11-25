@@ -1,0 +1,1380 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:collection/collection.dart';
+import 'package:core_ui/core_ui.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:platform_channels/platform_channels.dart';
+import 'package:platform_player/platform_player.dart';
+import 'package:platform_streams/platform_streams.dart';
+
+import '../../application/providers/cast_multiview_receiver_provider.dart';
+import '../../application/providers/channel_filters_provider.dart';
+import '../../application/providers/guide_providers.dart';
+import '../../application/providers/channel_auto_scan_providers.dart';
+import '../../application/providers/connectivity_provider.dart';
+import '../../application/providers/control_row_visibility_provider.dart';
+import '../../application/providers/hotbar_channels_provider.dart';
+import '../../application/providers/iptv_ad_placements.dart';
+import '../../application/providers/iptv_providers.dart';
+import '../../application/providers/multiview_provider.dart';
+import '../../application/channel_metadata_enrichment.dart';
+import '../../application/channel_warmup_policy.dart';
+import 'sections/bottom_nav_bar.dart';
+import 'sections/channel_info_bar.dart';
+import 'sections/channel_library_grid.dart';
+import 'sections/channel_name_overlay.dart';
+import 'sections/filter_dialogs.dart';
+import 'sections/filter_row.dart';
+import 'sections/hotbar.dart';
+import 'sections/multiview_actions.dart';
+import 'sections/multiview_layout_picker.dart';
+import 'sections/multiview_stage.dart';
+import 'sections/playback_stats_bar.dart';
+import 'sections/shell_help_dialog.dart';
+import 'sections/shell_settings_dialog.dart';
+
+typedef VideoFrameEncoder =
+    Future<Uint8List> Function(RenderRepaintBoundary boundary);
+
+/// Matches [ChannelLibraryGrid]'s phone breakpoint and
+/// [VideoPlayerWidget]'s compact inline player threshold.
+const _phoneLayoutBreakpoint = 600.0;
+
+class AiroTvShell extends ConsumerStatefulWidget {
+  const AiroTvShell({
+    super.key,
+    required this.channels,
+    required this.videoStage,
+    required this.onChannelSelected,
+    this.showVideoStage = true,
+    this.focusPlayDelay,
+    this.currentChannel,
+    this.metadataByChannelId = const {},
+    this.availabilityByChannelId = const {},
+    this.enrichMetadata = false,
+    this.onPlaylistSourceTap,
+    this.onWaysToWatchTap,
+    this.onShareVideoFrame,
+    this.videoFrameEncoder,
+    this.onFullscreenToggle,
+    this.videoStageHasOwnActions = false,
+    this.showStreamGlow = true,
+    this.onSearch,
+  });
+
+  final List<IPTVChannel> channels;
+  final Widget videoStage;
+  final ValueChanged<IPTVChannel> onChannelSelected;
+  final bool showVideoStage;
+  final Duration? focusPlayDelay;
+  final IPTVChannel? currentChannel;
+  final Map<String, ChannelBrowseMetadata> metadataByChannelId;
+  final Map<String, StreamAvailability> availabilityByChannelId;
+  final bool enrichMetadata;
+
+  /// Opens the playlist-source sheet from the LIVE bar. Consumed by
+  /// [ChannelInfoBar] on the grid-first ten-foot layout (`!showVideoStage`);
+  /// wired on TV where the phone app bar is suppressed. Null hides the
+  /// entry. The Explorer-rows settings dialog offers an equivalent
+  /// "Playlist source" row, wired independently from `iptv_screen.dart`.
+  final VoidCallback? onPlaylistSourceTap;
+
+  /// Enters the fullscreen player. Lives on the stage's own action row (not
+  /// inside [videoStage]) so it stays reachable once a MultiView session
+  /// replaces [videoStage] with [MultiviewStage] — [videoStage]'s own
+  /// fullscreen button disappears with it otherwise (see iptv_screen.dart's
+  /// "Open full player" button, which only overlays the single-channel
+  /// preview). Null hides the action, matching every other optional entry
+  /// point here.
+  final VoidCallback? onFullscreenToggle;
+
+  /// Opens the capability-aware fit/full/floating/Cast chooser from the
+  /// stage's own action row (re-homed there from the removed LIVE info bar).
+  /// Null hides the action.
+  ///
+  /// This only reaches layouts that actually draw a stage: the grid-first
+  /// ten-foot layout (`showVideoStage: false`) renders no action row, so it
+  /// currently has no Ways to Watch entry point at all.
+  ///
+  /// Typed as returning a `Future<void>` (rather than a plain [VoidCallback])
+  /// so the stage action row can wrap its invocation in [_whileSheetOpen] —
+  /// it opens a modal dialog just like Settings/Help/Layout, and needs the
+  /// same overlay-dismiss tracking for the same reason.
+  final Future<void> Function()? onWaysToWatchTap;
+
+  /// Host-owned delivery for a frame-only PNG capture.
+  final Future<void> Function(Uint8List pngBytes)? onShareVideoFrame;
+
+  /// Test seam for deterministic rendering validation. Production uses the
+  /// boundary's PNG encoder.
+  final VideoFrameEncoder? videoFrameEncoder;
+
+  /// Set by callers whose [videoStage] is a real player that already offers
+  /// its own Help/Settings entries (see `VideoPlayerWidget.onShowHelp` /
+  /// `onOpenSettings`) -- this shell then skips its own stage action row for
+  /// the single-channel case so the two overlays don't stack (#1025). Leave
+  /// this false whenever [videoStage] is a placeholder (no channel playing
+  /// yet) or anything else that can't offer those actions itself: the shell
+  /// then keeps drawing its own row so Help/Settings stay reachable no
+  /// matter what [videoStage] renders. MultiView always keeps this shell's
+  /// row regardless, since [MultiviewStage] has no sheet of its own.
+  final bool videoStageHasOwnActions;
+
+  /// Draws [AiroStreamGlow] along the bottom edge of the stage, outside the
+  /// video-capture boundary. Tests that wait for animations to finish pass
+  /// false; a repeating ribbon never settles.
+  final bool showStreamGlow;
+
+  /// Compact phone Search chip opens this instead of [SearchOverlay].
+  final VoidCallback? onSearch;
+
+  @override
+  ConsumerState<AiroTvShell> createState() => _AiroTvShellState();
+}
+
+class _AiroTvShellState extends ConsumerState<AiroTvShell> {
+  final _snapshotCache = ChannelBrowserSnapshotCache();
+  bool _countryPromptShowing = false;
+  Timer? _visibleScanDebounce;
+  String _visibleScanSignature = '';
+  final _videoCaptureKey = GlobalKey();
+
+  /// Slide-over channel browser on phone landscape (hidden by default so
+  /// playback can use the full viewport).
+  bool _phoneLandscapeLibraryOpen = false;
+
+  /// True while one of the stage action row's sheets (Settings / Help /
+  /// MultiView layout) owns the screen. Feeds [ChannelNameOverlay]'s
+  /// `dismissRequested` so the two never float over the stage at once.
+  bool _sheetOpen = false;
+
+  /// Holds [_sheetOpen] true for as long as [sheet] is on screen.
+  void _whileSheetOpen(Future<void> sheet) {
+    setState(() => _sheetOpen = true);
+    sheet.whenComplete(() {
+      if (mounted) setState(() => _sheetOpen = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _snapshotCache.clear();
+    _visibleScanDebounce?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filters = ref.watch(channelFiltersProvider);
+    ref.watch(countryXmltvGuideSyncProvider);
+    final metadata = widget.enrichMetadata
+        ? ref.watch(channelBrowseMetadataProvider).value ??
+              widget.metadataByChannelId
+        : widget.metadataByChannelId;
+    final sort = ref.watch(channelSortProvider);
+    final viewMode = ref.watch(channelViewModeProvider);
+    final gridDensity = ref.watch(channelGridDensityProvider);
+    final favoritesOnly = ref.watch(phoneLibraryFavoritesOnlyProvider);
+    final countryPrompt = ref.watch(channelCountryPromptProvider);
+    final hasHotbar = ref.watch(hotbarChannelsProvider).isNotEmpty;
+    final rowVisibility = ref.watch(controlRowVisibilityProvider);
+    final multiview = ref.watch(multiviewProvider);
+    // Keeps the Cast MultiView receiver bridge alive for as long as this
+    // shell is mounted — see cast_multiview_receiver_provider.dart. A plain
+    // watch (not read) so a hot-reload/rebuild doesn't tear it down.
+    ref.watch(castMultiviewReceiverBridgeProvider);
+    final favoriteChannelIds =
+        ref.watch(favoriteChannelIdsProvider).value?.toSet() ??
+        const <String>{};
+    final favoriteToggler = ref.read(channelFavoriteTogglerProvider);
+    final favoriteIds =
+        ref.watch(favoriteChannelIdsProvider).value ?? const <String>[];
+    final notForMeIds =
+        ref.watch(notForMeChannelIdsProvider).value ?? const <String>{};
+    final notForMeToggler = ref.read(channelNotForMeTogglerProvider);
+    // Stats is off by default. Watching the full streaming tick here used to
+    // rebuild the library on every live-position update and hitch phone
+    // flings. Only subscribe when the diagnostic row is actually showing.
+    final playbackStats = rowVisibility.isVisible(AiroTvControlRow.stats)
+        ? ref.watch(
+            streamingStateProvider.select(
+              (async) => async.asData?.value.playbackStats,
+            ),
+          )
+        : null;
+    final autoScanState = ref.watch(channelAutoScanProvider);
+    final availabilityByChannelId = {
+      ...widget.availabilityByChannelId,
+      ...autoScanState.availabilityByChannelId,
+    };
+    final showStats =
+        rowVisibility.isVisible(AiroTvControlRow.stats) &&
+        widget.currentChannel != null &&
+        playbackStats != null &&
+        playbackStats.hasValues;
+    final showHotbar =
+        rowVisibility.isVisible(AiroTvControlRow.hotbar) && hasHotbar;
+    final showFilter = rowVisibility.isVisible(AiroTvControlRow.filter);
+    final showPlaylist = rowVisibility.isVisible(AiroTvControlRow.playlist);
+    // The grid-first ten-foot layout (`showVideoStage: false`) renders no
+    // video stage, and therefore no stage action row -- [ChannelNameOverlay]
+    // and the re-homed Help/Ways-to-Watch actions never mount there. Before
+    // this task, `ChannelInfoBar` was that layout's *only* host for those two
+    // actions (always rendered, regardless of `showVideoStage`), so it is
+    // restored here specifically for the no-stage case. Layouts with a video
+    // stage keep using `ChannelNameOverlay` on the stage instead; this row
+    // never renders alongside it.
+    final showInfoBar = !widget.showVideoStage;
+    // The first visible ten-foot chrome row seeds D-pad focus (stats is a
+    // read-only bar, never a focus target). Without this, cold-launch and
+    // filter/EPG round trips left focus nowhere, and the filter chip row was
+    // a D-pad journey away with no reliable path back up from the grid
+    // (#reported: "unreachable strips of options"). `ChannelInfoBar`, when
+    // present, is the topmost candidate (matching its role before this
+    // task); otherwise the filter row claims focus whenever it's visible.
+    // `Hotbar` deliberately has no autofocus seam of its own, so it is never
+    // part of this chain -- excluding it (rather than gating the filter row
+    // behind `!showHotbar`) is what lets the filter row seed focus for the
+    // default case of a fresh install with a pinned hotbar channel and no
+    // info bar (`showVideoStage: true`).
+    final infoBarAutofocus = showInfoBar;
+    final filterRowAutofocus = !showInfoBar && showFilter;
+    final snapshot = _snapshotCache.resolve(
+      channels: widget.channels,
+      metadataByChannelId: metadata,
+      filters: filters,
+      sort: sort,
+      favoriteIds: favoriteIds,
+      notForMeIds: notForMeIds,
+      favoritesOnly: favoritesOnly,
+    );
+    _maybeAskForCountry(
+      filters: filters,
+      dimensions: snapshot.dimensions,
+      countryPrompt: countryPrompt,
+    );
+    ChannelLibraryGrid libraryGrid({
+      required bool compact,
+    }) => ChannelLibraryGrid(
+      key: const ValueKey('airo-tv-channel-library'),
+      channels: snapshot.visibleChannels,
+      metadataByChannelId: metadata,
+      availabilityByChannelId: availabilityByChannelId,
+      sort: sort,
+      onSort: (column) =>
+          ref.read(channelSortProvider.notifier).state = sort.toggle(column),
+      viewMode: viewMode,
+      onViewModeChanged: (mode) =>
+          ref.read(channelViewModeProvider.notifier).setMode(mode),
+      showSortRow: !compact,
+      phoneGridColumns: gridDensity.columns,
+      onChannelSelected: (channel) => _selectChannel(
+        context,
+        channel,
+        snapshot.visibleChannels,
+        availabilityByChannelId,
+      ),
+      focusPlayDelay: widget.focusPlayDelay,
+      onVisibleChannelsChanged: _scheduleVisibleChannelScan,
+      multiviewChannelIds: {
+        for (final session in multiview.sessions) session.id,
+      },
+      // [MultiviewStage] is built inside `videoStage`, which is only mounted
+      // when `showVideoStage` is true — and TV passes false. Wiring the
+      // toggle regardless meant the remote's menu key answered "X added to
+      // multiview" for a stage that never appears. `ChannelLibraryGrid`
+      // treats a null callback as "this device has no multiview", so it also
+      // drops the menu-key binding and the per-tile button.
+      onMultiviewToggle: widget.showVideoStage
+          ? (channel) => _toggleMultiview(context, channel)
+          : null,
+      favoriteChannelIds: favoriteChannelIds,
+      onFavoriteToggle: (channel) => favoriteToggler(channel.id),
+      notForMeChannelIds: notForMeIds,
+      onNotForMeToggle: (channel) => notForMeToggler(channel.id),
+      onClearFilters: () {
+        ref.read(channelFiltersProvider.notifier).clear();
+        ref.read(phoneLibraryFavoritesOnlyProvider.notifier).state = false;
+      },
+      // Ten-foot is grid-first (`showVideoStage: false`). Native mobile
+      // layouts break on leanback, and Cast must never carry an ad tile.
+      browseAdCard:
+          widget.showVideoStage &&
+              !ref.watch(iptvCastProvider.select((state) => state.isCasting))
+          ? ref.watch(iptvAdPlacementsProvider).browseCard
+          : null,
+      floatingNavScrollClearance: widget.onSearch == null
+          ? 0
+          : kIptvPhoneFloatingNavExtent,
+    );
+    // Only ever built for the `!showVideoStage` (grid-first ten-foot) case --
+    // see `showInfoBar` above. `share_plus` is stubbed on that layout, so
+    // sharing has nowhere for a remote to paste it; screenshot capture stays
+    // wired the same way the stage action row does.
+    ChannelInfoBar infoBarFor(bool compact) => ChannelInfoBar(
+      channel: widget.currentChannel,
+      showShareAction: false,
+      onHelpTap: () => showAiroTvShellHelpDialog(context),
+      onPlaylistSourceTap: widget.onPlaylistSourceTap,
+      onWaysToWatchTap: widget.onWaysToWatchTap,
+      onScreenshotTap: widget.onShareVideoFrame == null
+          ? null
+          : () => _captureVideoFrame(context),
+      autofocus: infoBarAutofocus,
+      compact: compact,
+    );
+    final hotbar = Hotbar(
+      channels: widget.channels,
+      onChannelSelected: widget.onChannelSelected,
+    );
+    FilterRow filterRowFor(bool compact) => FilterRow(
+      dimensions: snapshot.dimensions,
+      autofocus: filterRowAutofocus,
+      compact: compact,
+      sort: compact ? sort : null,
+      onSort: compact
+          ? (column) => ref.read(channelSortProvider.notifier).state = sort
+                .toggle(column)
+          : null,
+      viewMode: viewMode,
+      onViewModeChanged: compact
+          ? (mode) => ref.read(channelViewModeProvider.notifier).setMode(mode)
+          : null,
+      favoritesOnly: favoritesOnly,
+      onFavoritesOnlyChanged: compact
+          ? (value) =>
+                ref.read(phoneLibraryFavoritesOnlyProvider.notifier).state =
+                    value
+          : null,
+      onSearch: widget.onSearch,
+    );
+    // A real `VideoPlayerWidget` videoStage owns its own touch-reveal chrome
+    // and player-actions sheet -- wrapping it in a second, always-visible
+    // icon row stacked two overlays the moment a viewer tapped the screen,
+    // so callers that wired Help/Settings into that sheet themselves opt out
+    // of this row via `videoStageHasOwnActions` (#1025). Every other
+    // videoStage (a "select a channel" placeholder, a bare stub, or a live
+    // MultiView session, which has no sheet of its own) keeps this row so
+    // Help/Settings/Fullscreen stay reachable no matter what's on screen.
+    final needsShellVideoActions =
+        multiview.sessions.isNotEmpty || !widget.videoStageHasOwnActions;
+    final stage = needsShellVideoActions
+        ? _VideoStageWithActions(
+            // Transient channel identity, in the same Stack as the action
+            // row (and outside the capture RepaintBoundary below, so a
+            // shared video frame never carries shell chrome). Hidden for as
+            // long as one of the three sheets this row opens is up.
+            channelOverlay: ChannelNameOverlay(
+              channel: widget.currentChannel,
+              dismissRequested: _sheetOpen,
+            ),
+            onSettings: () =>
+                _whileSheetOpen(showAiroTvShellSettingsDialog(context)),
+            onHelp: () => _whileSheetOpen(showAiroTvShellHelpDialog(context)),
+            // Available whenever there is something to show fullscreen: a
+            // single playing channel, or a live MultiView session (primary
+            // playback is paused while MultiView is active, so
+            // currentChannel alone would hide this the moment a second
+            // stream joins).
+            onFullscreen:
+                (widget.currentChannel == null && multiview.sessions.isEmpty)
+                ? null
+                : widget.onFullscreenToggle,
+            onLayout: multiview.sessions.isEmpty
+                ? null
+                : () => _whileSheetOpen(
+                    _showMultiviewLayoutPicker(context, multiview),
+                  ),
+            onScreenshot: widget.onShareVideoFrame == null
+                ? null
+                : () => _whileSheetOpen(_captureVideoFrame(context)),
+            onWaysToWatch: widget.onWaysToWatchTap == null
+                ? null
+                : () => _whileSheetOpen(widget.onWaysToWatchTap!()),
+            child: KeyedSubtree(
+              key: const ValueKey('airo-tv-video-capture-scope'),
+              child: RepaintBoundary(
+                key: _videoCaptureKey,
+                child: multiview.sessions.isEmpty
+                    ? widget.videoStage
+                    : MultiviewStage(
+                        sessions: multiview.sessions,
+                        featuredChannelId: multiview.featuredChannelId,
+                        layout: multiview.layout,
+                        splitRatio: multiview.splitRatio,
+                        onSplitRatioChanged: (ratio) => ref
+                            .read(multiviewProvider.notifier)
+                            .setSplitRatio(ratio),
+                        onSplitMixPreview: (fraction, extent) => unawaited(
+                          ref
+                              .read(multiviewProvider.notifier)
+                              .previewSplitMix(fraction, extent: extent),
+                        ),
+                        onPromote: (channelId) => ref
+                            .read(multiviewProvider.notifier)
+                            .promote(channelId),
+                        onSwap: (firstId, secondId) => ref
+                            .read(multiviewProvider.notifier)
+                            .swap(firstId, secondId),
+                        // Reuses the same toggle() call (and its snackbar
+                        // + retry-on-StateError handling) that the grid's
+                        // per-tile multiview button already goes through —
+                        // an active session's id is always its channel id
+                        // (see IptvMultiviewSession.id), so this always
+                        // removes rather than adds.
+                        onDismiss: (channelId) => _toggleMultiview(
+                          context,
+                          multiview.sessions
+                              .firstWhere((session) => session.id == channelId)
+                              .channel,
+                        ),
+                        onEmptySlotTap: () => showMultiviewEmptySlotPicker(
+                          context,
+                          allChannels: widget.channels,
+                          excludeChannelIds: {
+                            for (final session in multiview.sessions)
+                              session.id,
+                          },
+                          onSelected: (channel) =>
+                              _toggleMultiview(context, channel),
+                        ),
+                      ),
+              ),
+            ),
+          )
+        : KeyedSubtree(
+            key: const ValueKey('airo-tv-video-capture-scope'),
+            child: RepaintBoundary(
+              key: _videoCaptureKey,
+              child: widget.videoStage,
+            ),
+          );
+
+    final showGlow =
+        widget.showStreamGlow &&
+        widget.showVideoStage &&
+        (widget.currentChannel != null || multiview.sessions.isNotEmpty);
+    // The stage owns the capture boundary. The ribbon is a sibling so a
+    // shared video frame does not include it, and it does not take hits.
+    final videoStage = showGlow
+        ? Stack(
+            fit: StackFit.expand,
+            children: [
+              stage,
+              const Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 36,
+                child: AiroStreamGlow(),
+              ),
+            ],
+          )
+        : stage;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final shortestSide = math.min(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
+        final isLandscape = constraints.maxWidth > constraints.maxHeight;
+        final usePhonePortraitStack =
+            constraints.maxWidth < _phoneLayoutBreakpoint;
+        final usePhoneLandscapeImmersive =
+            widget.showVideoStage &&
+            isLandscape &&
+            shortestSide < _phoneLayoutBreakpoint;
+
+        final chrome = [
+          const _OfflineBanner(),
+          if (showInfoBar)
+            _ExplorerSection(
+              label: 'LIVE',
+              height: 60,
+              child: infoBarFor(false),
+            ),
+          if (showStats)
+            _ExplorerSection(
+              label: 'STATS',
+              height: 48,
+              child: PlaybackStatsBar(stats: playbackStats),
+            ),
+          if (showHotbar)
+            _ExplorerSection(label: 'HOTBAR', height: 56, child: hotbar),
+          if (showFilter)
+            _ExplorerSection(
+              label: 'FILTER',
+              height: 48,
+              child: filterRowFor(false),
+            ),
+        ];
+        final compactChrome = [
+          const _OfflineBanner(),
+          if (showInfoBar) infoBarFor(true),
+          if (showStats)
+            SizedBox(height: 48, child: PlaybackStatsBar(stats: playbackStats)),
+          if (showHotbar) hotbar,
+          if (showFilter) filterRowFor(true),
+        ];
+        if (usePhoneLandscapeImmersive) {
+          final panelWidth = math.min(constraints.maxWidth * 0.46, 400.0);
+          return FocusTraversalGroup(
+            child: Stack(
+              key: const ValueKey('airo-tv-phone-landscape-immersive'),
+              fit: StackFit.expand,
+              children: [
+                Positioned.fill(
+                  child: ColoredBox(
+                    color: Colors.black,
+                    child: SafeArea(
+                      bottom: false,
+                      child: _PhoneLandscapeVideoSurface(child: videoStage),
+                    ),
+                  ),
+                ),
+                if (_phoneLandscapeLibraryOpen) ...[
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () =>
+                          setState(() => _phoneLandscapeLibraryOpen = false),
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: 0.55),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    right: 0,
+                    width: panelWidth,
+                    child: Material(
+                      key: const ValueKey('airo-tv-phone-landscape-panel'),
+                      color: const Color(0xFF020419),
+                      child: SafeArea(
+                        left: false,
+                        child: Column(
+                          children: [
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: IconButton(
+                                key: const ValueKey(
+                                  'airo-tv-phone-landscape-close',
+                                ),
+                                tooltip: 'Close channels',
+                                onPressed: () => setState(
+                                  () => _phoneLandscapeLibraryOpen = false,
+                                ),
+                                icon: const Icon(Icons.close),
+                              ),
+                            ),
+                            ...compactChrome,
+                            if (showPlaylist)
+                              Expanded(child: libraryGrid(compact: true)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                if (!_phoneLandscapeLibraryOpen)
+                  Positioned(
+                    left: 8 + MediaQuery.paddingOf(context).left,
+                    top: 8 + MediaQuery.paddingOf(context).top,
+                    child: _PhoneLandscapeChannelsButton(
+                      onPressed: () =>
+                          setState(() => _phoneLandscapeLibraryOpen = true),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        }
+        if (usePhonePortraitStack) {
+          return FocusTraversalGroup(
+            child: Column(
+              children: [
+                if (widget.showVideoStage)
+                  Flexible(flex: 3, child: _HeroVideoFrame(child: videoStage)),
+                ...compactChrome,
+                if (showPlaylist)
+                  Expanded(flex: 4, child: libraryGrid(compact: true)),
+              ],
+            ),
+          );
+        }
+        final previewWidth = (constraints.maxWidth * 0.34)
+            .clamp(320.0, 480.0)
+            .toDouble();
+        final previewHeight = previewWidth * 9 / 16;
+        final panelWidth = widget.showVideoStage
+            ? (constraints.maxWidth * 0.88).clamp(720.0, 1120.0).toDouble()
+            : constraints.maxWidth;
+
+        return Container(
+          key: const ValueKey('airo-tv-explorer-wide-shell'),
+          color: Colors.black,
+          child: Column(
+            children: [
+              if (widget.showVideoStage)
+                Flexible(
+                  flex: 3,
+                  child: Center(
+                    child: FittedBox(
+                      fit: BoxFit.contain,
+                      child: SizedBox(
+                        key: const ValueKey('airo-tv-explorer-video-stage'),
+                        width: previewWidth,
+                        height: previewHeight,
+                        child: ClipRect(
+                          child: FittedBox(
+                            fit: BoxFit.contain,
+                            child: SizedBox(
+                              width: 640,
+                              height: 360,
+                              child: videoStage,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              Expanded(
+                flex: widget.showVideoStage ? 5 : 1,
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    key: const ValueKey('airo-tv-explorer-panel'),
+                    constraints: BoxConstraints(maxWidth: panelWidth),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF020419),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      // One traversal group across LIVE bar / stats / hotbar
+                      // / filter chips / grid: Flutter's directional focus
+                      // search is unreliable across separately-scoped
+                      // siblings (see tv_shell.dart's LEFT-edge bridge for
+                      // the sidebar case), and these rows previously had no
+                      // shared scope at all.
+                      child: FocusTraversalGroup(
+                        child: Column(
+                          children: [
+                            ...chrome,
+                            if (showPlaylist)
+                              Expanded(child: libraryGrid(compact: false)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showMultiviewLayoutPicker(
+    BuildContext context,
+    MultiviewState multiview,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const ValueKey('airo-tv-multiview-layout-dialog'),
+        title: const Text('MultiView layout'),
+        content: MultiviewLayoutPicker(
+          selected: resolveMultiviewLayout(
+            preferred: multiview.layout,
+            sessionCount: multiview.sessions.length,
+          ),
+          capacity: multiview.capacity,
+          onSelected: (kind) {
+            ref.read(multiviewProvider.notifier).setLayout(kind);
+            Navigator.of(dialogContext).pop();
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleMultiview(
+    BuildContext context,
+    IPTVChannel channel,
+  ) async {
+    // AiroTvShellState's channel-list reload no longer tears this widget
+    // down on its own (see #1985), but `ref` can still momentarily go
+    // unusable from unrelated ancestor rebuilds -- this used to be a fully
+    // uncaught StateError here (silent no-op: no snackbar, no state change,
+    // confirmed on-device), which is worse than the retry itself. One short
+    // retry catches the residual race; a final failure is at least visible.
+    //
+    // Separately (confirmed on-device): opening a new session has no
+    // feedback at all while it's in flight, and a slow/dead stream can take
+    // 10+ seconds to time out and report failure -- during that whole
+    // window the toggle looks exactly like it's doing nothing. An
+    // immediate "opening" snackbar (add only; remove is effectively
+    // instant) makes that wait legible instead of looking broken.
+    final wasInMultiview = ref.read(multiviewProvider).contains(channel.id);
+    if (!wasInMultiview && context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Opening ${channel.name}...'),
+            duration: const Duration(seconds: 20),
+          ),
+        );
+    }
+    MultiviewToggleResult result;
+    try {
+      result = await ref.read(multiviewProvider.notifier).toggle(channel);
+    } on StateError {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      if (!context.mounted) return;
+      try {
+        result = await ref.read(multiviewProvider.notifier).toggle(channel);
+      } on StateError {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('Could not update multiview right now. Try again.'),
+            ),
+          );
+        return;
+      }
+    }
+    if (!context.mounted) return;
+    if (result == MultiviewToggleResult.capacityReached) {
+      // Clears the "Opening ${channel.name}..." snackbar shown above --
+      // toggle() never actually opened anything once capacity was already
+      // full, so that snackbar would otherwise sit behind this dialog for
+      // up to its full 20s duration.
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      await showMultiviewReplaceDialog(
+        context,
+        sessions: ref.read(multiviewProvider).sessions,
+        onReplace: (oldChannelId) async {
+          final replaceResult = await ref
+              .read(multiviewProvider.notifier)
+              .replace(oldChannelId, channel);
+          if (!context.mounted) return;
+          final replaceMessage = switch (replaceResult) {
+            MultiviewToggleResult.added => '${channel.name} added to multiview',
+            // replace() only frees a slot if `oldChannelId` is still actually
+            // in the pool at call time. If that session already ended on its
+            // own while the dialog was open, no slot is freed and
+            // capacityReached is exactly what comes back -- give it the same
+            // feedback as failed rather than silently doing nothing.
+            MultiviewToggleResult.failed ||
+            MultiviewToggleResult.capacityReached =>
+              '${channel.name} could not be opened in multiview.',
+            // replace() never reports removed: it never removes without also
+            // adding.
+            MultiviewToggleResult.removed => null,
+          };
+          if (replaceMessage == null) return;
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(content: Text(replaceMessage)));
+        },
+      );
+      return;
+    }
+    final message = switch (result) {
+      MultiviewToggleResult.added => '${channel.name} added to multiview',
+      MultiviewToggleResult.removed => '${channel.name} removed from multiview',
+      MultiviewToggleResult.capacityReached =>
+        'This device supports up to '
+            '${ref.read(multiviewProvider).capacity} multiview streams.',
+      MultiviewToggleResult.failed =>
+        '${channel.name} could not be opened in multiview.',
+    };
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _captureVideoFrame(BuildContext context) async {
+    final share = widget.onShareVideoFrame;
+    final boundary =
+        _videoCaptureKey.currentContext?.findRenderObject()
+            as RenderRepaintBoundary?;
+    if (share == null || boundary == null) {
+      _showCaptureMessage(context, 'Video frame is not ready to share.');
+      return;
+    }
+    try {
+      final bytes =
+          await (widget.videoFrameEncoder?.call(boundary) ??
+              _encodeVideoBoundary(boundary));
+      await share(bytes);
+      if (!context.mounted) return;
+      _showCaptureMessage(context, 'Video frame ready to share.');
+    } catch (error) {
+      debugPrint('[AiroTvShell] video-frame capture failed: $error');
+      if (!context.mounted) return;
+      _showCaptureMessage(context, 'Could not capture this video frame.');
+    }
+  }
+
+  Future<Uint8List> _encodeVideoBoundary(RenderRepaintBoundary boundary) async {
+    final image = await boundary.toImage(pixelRatio: 1);
+    try {
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) throw StateError('PNG encoding failed');
+      return data.buffer.asUint8List();
+    } finally {
+      image.dispose();
+    }
+  }
+
+  void _showCaptureMessage(BuildContext context, String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _selectChannel(
+    BuildContext context,
+    IPTVChannel channel,
+    List<IPTVChannel> visibleChannels,
+    Map<String, StreamAvailability> availabilityByChannelId,
+  ) {
+    if (!isChannelConfirmedUnavailable(availabilityByChannelId[channel.id])) {
+      widget.onChannelSelected(channel);
+      return;
+    }
+
+    final fallback = visibleChannels
+        .where(
+          (candidate) =>
+              candidate.id != channel.id &&
+              canSelectChannelWithAvailability(
+                availabilityByChannelId[candidate.id],
+              ),
+        )
+        .firstOrNull;
+    if (fallback != null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text('${channel.name} is unavailable. Skipping.')),
+        );
+      widget.onChannelSelected(fallback);
+      return;
+    }
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text('${channel.name} is unavailable right now.')),
+      );
+  }
+
+  void _scheduleVisibleChannelScan(List<IPTVChannel> channels) {
+    final autoScanState = ref.read(channelAutoScanProvider);
+    final plan = planChannelWarmup(
+      totalChannelCount: ref.read(filteredChannelsProvider).length,
+      candidateCount: channels.length,
+      cachedChannelCount: autoScanState.availabilityByChannelId.length,
+      playbackState: ref.read(playbackStateProvider),
+    );
+    if (plan.isEmpty) return;
+    final visible = channels.take(plan.limit).toList(growable: false);
+    final signature = visible.map((channel) => channel.id).join(',');
+    if (signature.isEmpty || signature == _visibleScanSignature) return;
+    _visibleScanSignature = signature;
+    _visibleScanDebounce?.cancel();
+    _visibleScanDebounce = Timer(plan.debounce, () {
+      if (!mounted) return;
+      ref
+          .read(channelAutoScanProvider.notifier)
+          .start(
+            scopeId: 'airo-tv-visible|$signature',
+            channels: visible,
+            maxConcurrentRequests: plan.maxConcurrentRequests,
+            currentPlayingChannelId: ref
+                .read(iptvStreamingServiceProvider)
+                .currentState
+                .currentChannel
+                ?.id,
+          );
+    });
+  }
+
+  void _maybeAskForCountry({
+    required ChannelFilters filters,
+    required ChannelFilterDimensions dimensions,
+    required AsyncValue<bool> countryPrompt,
+  }) {
+    final completed = _countryPromptCompleted(countryPrompt);
+    if (completed != false || _countryPromptShowing) return;
+    if (filters.country != null) {
+      unawaited(
+        ref.read(channelCountryPromptProvider.notifier).markCompleted(),
+      );
+      return;
+    }
+    if (dimensions.countries.isEmpty) return;
+
+    _countryPromptShowing = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final latestCompleted = ref
+          .read(channelCountryPromptProvider)
+          .maybeWhen(data: (value) => value, orElse: () => null);
+      final latestFilters = ref.read(channelFiltersProvider);
+      if (latestCompleted != false || latestFilters.country != null) {
+        _countryPromptShowing = false;
+        return;
+      }
+
+      final notifier = ref.read(channelFiltersProvider.notifier);
+      await showTvLongListPicker(
+        context: context,
+        title: 'Choose your country',
+        options: dimensions.countries.toList(growable: false),
+        selectedValue: latestFilters.country,
+        onSelected: notifier.setCountry,
+        onClear: () => notifier.setCountry(null),
+        optionLabel: countryDisplayLabel,
+      );
+      if (mounted) {
+        await ref.read(channelCountryPromptProvider.notifier).markCompleted();
+        _countryPromptShowing = false;
+      }
+    });
+  }
+}
+
+class _VideoStageWithActions extends StatelessWidget {
+  const _VideoStageWithActions({
+    required this.onSettings,
+    required this.onHelp,
+    this.onLayout,
+    this.onFullscreen,
+    this.onScreenshot,
+    this.onWaysToWatch,
+    this.channelOverlay,
+    required this.child,
+  });
+
+  final Widget child;
+  final VoidCallback onSettings;
+  final VoidCallback onHelp;
+  final VoidCallback? onLayout;
+  final VoidCallback? onFullscreen;
+  final VoidCallback? onScreenshot;
+  final VoidCallback? onWaysToWatch;
+
+  /// Transient channel identity ([ChannelNameOverlay]), layered between the
+  /// video and the action row. It must sit *below* the row so a remote or
+  /// finger aiming at Help/Settings hits the button, not the overlay's
+  /// stage-wide activity surface.
+  final Widget? channelOverlay;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        child,
+        ?channelOverlay,
+        Positioned(
+          top: 8,
+          right: 8,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (onFullscreen != null) ...[
+                _StageAction(
+                  key: const ValueKey('airo-tv-shell-fullscreen-action'),
+                  icon: Icons.fullscreen,
+                  tooltip: 'Open full player',
+                  onPressed: onFullscreen!,
+                ),
+                const SizedBox(width: 4),
+              ],
+              if (onLayout != null) ...[
+                _StageAction(
+                  key: const ValueKey('airo-tv-shell-layout-action'),
+                  icon: Icons.grid_view,
+                  tooltip: 'MultiView layout',
+                  onPressed: onLayout!,
+                ),
+                const SizedBox(width: 4),
+              ],
+              // Re-homed from the removed LIVE info bar, where these were
+              // the only entry points on the layouts that draw a stage.
+              // Both are stage-scoped actions anyway: capture reads the
+              // stage's RepaintBoundary, and fit/full/floating describes how
+              // the stage presents itself.
+              if (onWaysToWatch != null) ...[
+                _StageAction(
+                  key: const ValueKey('airo-tv-shell-ways-to-watch-action'),
+                  icon: Icons.monitor_outlined,
+                  tooltip: 'Ways to Watch',
+                  onPressed: onWaysToWatch!,
+                ),
+                const SizedBox(width: 4),
+              ],
+              if (onScreenshot != null) ...[
+                _StageAction(
+                  key: const ValueKey('airo-tv-shell-screenshot-action'),
+                  icon: Icons.photo_camera_outlined,
+                  tooltip: 'Share video frame',
+                  onPressed: onScreenshot!,
+                ),
+                const SizedBox(width: 4),
+              ],
+              _StageAction(
+                key: const ValueKey('airo-tv-shell-help-action'),
+                icon: Icons.help_outline,
+                tooltip: 'Aika Stream Help',
+                onPressed: onHelp,
+              ),
+              const SizedBox(width: 4),
+              _StageAction(
+                key: const ValueKey('airo-tv-shell-settings-action'),
+                icon: Icons.tune,
+                tooltip: 'Explorer rows',
+                onPressed: onSettings,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StageAction extends StatelessWidget {
+  const _StageAction({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return TvFocusable(
+      semanticLabel: tooltip,
+      onSelect: onPressed,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.56),
+        shape: const CircleBorder(),
+        child: IconButton(
+          tooltip: tooltip,
+          onPressed: onPressed,
+          icon: Icon(icon, color: Colors.white),
+        ),
+      ),
+    );
+  }
+}
+
+bool? _countryPromptCompleted(AsyncValue<bool> prompt) {
+  return prompt.maybeWhen(data: (value) => value, orElse: () => null);
+}
+
+/// Sizes the inline player to the largest 16:9 rect that fits the viewport,
+/// using height as the limiting axis in landscape (standard mobile OTT).
+class _PhoneLandscapeVideoSurface extends StatelessWidget {
+  const _PhoneLandscapeVideoSurface({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxW = constraints.maxWidth;
+        final maxH = constraints.maxHeight;
+        if (maxW <= 0 || maxH <= 0) {
+          return const SizedBox.shrink();
+        }
+        final widthLimitedHeight = maxW * 9 / 16;
+        late final double width;
+        late final double height;
+        if (widthLimitedHeight <= maxH) {
+          width = maxW;
+          height = widthLimitedHeight;
+        } else {
+          height = maxH;
+          width = height * 16 / 9;
+        }
+        return Center(
+          child: SizedBox(width: width, height: height, child: child),
+        );
+      },
+    );
+  }
+}
+
+class _PhoneLandscapeChannelsButton extends StatelessWidget {
+  const _PhoneLandscapeChannelsButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(24),
+      child: InkWell(
+        key: const ValueKey('airo-tv-phone-landscape-channels-toggle'),
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(24),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.view_list_rounded,
+                color: Theme.of(context).colorScheme.primary,
+                size: 22,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Channels',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Frames the phone-layout video stage as a rounded, elevated card instead of
+/// bare full-bleed content: without this the player read as a rectangle
+/// floating in empty page space, with no visual relationship to the chrome
+/// around it (design feedback: "make the video player the hero").
+class _HeroVideoFrame extends StatelessWidget {
+  const _HeroVideoFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.white12),
+          borderRadius: BorderRadius.circular(AiroSpacing.radiusLg),
+        ),
+        child: child,
+      ),
+    );
+  }
+}
+
+class _ExplorerSection extends StatelessWidget {
+  const _ExplorerSection({
+    required this.label,
+    required this.height,
+    required this.child,
+  });
+
+  final String label;
+  final double height;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: Colors.white12)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              width: 30,
+              child: Center(
+                child: RotatedBox(
+                  quarterTurns: 3,
+                  child: Text(
+                    label,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Colors.white54,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const VerticalDivider(width: 1, color: Colors.white12),
+            Expanded(child: child),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// AiroTV D-pad design's "OFFLINE" screen, condensed to a non-blocking
+/// banner instead of a full-screen takeover: the playlist is cached, so
+/// channels stay browsable and (if already playing) video keeps playing —
+/// only new stream starts would actually need the connection. Renders
+/// nothing while online.
+class _OfflineBanner extends ConsumerStatefulWidget {
+  const _OfflineBanner();
+
+  @override
+  ConsumerState<_OfflineBanner> createState() => _OfflineBannerState();
+}
+
+class _OfflineBannerState extends ConsumerState<_OfflineBanner> {
+  bool _checking = false;
+
+  // issues/04-recovery-states.md acceptance criterion 4: Retry must report
+  // success or failure, not just spin -- and must not be a fake button
+  // (isOnlineProvider is watched from the same ConnectivityService this
+  // re-checks, so a real change is what actually dismisses the banner).
+  Future<void> _retry() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    final isConnected = await ref.read(connectivityServiceProvider).isConnected;
+    if (!mounted) return;
+    setState(() => _checking = false);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            isConnected
+                ? 'Back online'
+                : 'Still no connection — check your network and try again',
+          ),
+        ),
+      );
+  }
+
+  // issues/04-recovery-states.md acceptance criterion 4, second half: a
+  // real platform adapter, or omitted where unsupported -- never a
+  // disabled button (WifiSettingsLauncher.isSupported gates whether this
+  // renders at all, see build()).
+  Future<void> _openWifiSettings() async {
+    final opened = await ref.read(wifiSettingsLauncherProvider).open();
+    if (!mounted || opened) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(content: Text("Couldn't open Wi-Fi settings")),
+      );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isOnline = ref.watch(isOnlineProvider).asData?.value ?? true;
+    if (isOnline) return const SizedBox.shrink();
+    final wifiSettingsSupported = ref
+        .watch(wifiSettingsLauncherProvider)
+        .isSupported;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      color: const Color(0xFF3A2A0A),
+      child: Row(
+        children: [
+          const Icon(Icons.wifi_off_rounded, size: 16, color: Colors.amber),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'No network connection — your playlist is cached, but '
+              'streams need a connection.',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.amber.shade100),
+            ),
+          ),
+          const SizedBox(width: 8),
+          TvFocusable(
+            key: const ValueKey('offline-banner-retry'),
+            semanticLabel: 'Retry connection',
+            onSelect: _checking ? null : _retry,
+            borderRadius: 6,
+            child: TextButton.icon(
+              onPressed: _checking ? null : _retry,
+              icon: _checking
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.amber,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.refresh_rounded,
+                      size: 16,
+                      color: Colors.amber,
+                    ),
+              label: Text(
+                'Retry',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: Colors.amber),
+              ),
+            ),
+          ),
+          if (wifiSettingsSupported) ...[
+            const SizedBox(width: 4),
+            TvFocusable(
+              key: const ValueKey('offline-banner-wifi-settings'),
+              semanticLabel: 'Open Wi-Fi settings',
+              onSelect: _openWifiSettings,
+              borderRadius: 6,
+              child: TextButton.icon(
+                onPressed: _openWifiSettings,
+                icon: const Icon(
+                  Icons.settings_outlined,
+                  size: 16,
+                  color: Colors.amber,
+                ),
+                label: Text(
+                  'Wi-Fi Settings',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: Colors.amber),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}

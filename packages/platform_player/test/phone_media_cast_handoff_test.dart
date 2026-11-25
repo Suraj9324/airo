@@ -1,0 +1,409 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:platform_player/platform_player.dart';
+import 'package:platform_receiver_modes/platform_receiver_modes.dart';
+import 'package:product_capabilities/product_capabilities.dart';
+
+void main() {
+  late Directory tempDir;
+  late File mediaFile;
+  late FakeAiroCastController castController;
+
+  const device = AiroCastDevice(id: 'tv-1', name: 'Living Room TV');
+
+  setUp(() async {
+    tempDir = await Directory.systemTemp.createTemp('phone_media_handoff');
+    mediaFile = File('${tempDir.path}/movie.mp4');
+    await mediaFile.writeAsBytes(List<int>.filled(2048, 7));
+    castController = FakeAiroCastController();
+    await castController.initialize();
+    await castController.startDiscovery();
+    await castController.connect(device);
+  });
+
+  tearDown(() async {
+    await castController.dispose();
+    await tempDir.delete(recursive: true);
+  });
+
+  PhoneLocalMediaItem itemFor({
+    String? filePath,
+    String container = 'mp4',
+    String? videoCodec = 'h264',
+  }) {
+    return PhoneLocalMediaItem(
+      filePath: filePath ?? mediaFile.path,
+      title: 'Movie Night',
+      container: container,
+      videoCodec: videoCodec,
+      duration: const Duration(minutes: 90),
+    );
+  }
+
+  PhoneMediaCastHandoff handoffFor({
+    PhoneMediaReceiverCapabilities capabilities =
+        PhoneMediaReceiverCapabilities.chromecastDefault,
+    LegacyReceiverModeContract? receiverModeContract,
+  }) {
+    return PhoneMediaCastHandoff(
+      castController: castController,
+      capabilities: capabilities,
+      receiverModeContract: receiverModeContract,
+      bindAddress: InternetAddress.loopbackIPv4,
+      // Tests that aren't exercising connectivity teardown shouldn't reach
+      // the real platform channel, which has no plugin registered here.
+      debugConnectivityStream: const Stream.empty(),
+    );
+  }
+
+  test('rejects unsupported containers without starting a server', () async {
+    final handoff = handoffFor();
+    final result = await handoff.start(itemFor(container: 'avi'));
+
+    expect(result, isA<PhoneMediaHandoffUnsupported>());
+    final unsupported = result as PhoneMediaHandoffUnsupported;
+    expect(unsupported.reason, PhoneMediaUnsupportedReason.container);
+    expect(handoff.isServing, isFalse);
+    expect(castController.currentSessionState.media, isNull);
+  });
+
+  test('rejects unsupported video codecs without starting a server', () async {
+    final handoff = handoffFor();
+    final result = await handoff.start(itemFor(videoCodec: 'mpeg2'));
+
+    expect(result, isA<PhoneMediaHandoffUnsupported>());
+    final unsupported = result as PhoneMediaHandoffUnsupported;
+    expect(unsupported.reason, PhoneMediaUnsupportedReason.videoCodec);
+    expect(handoff.isServing, isFalse);
+  });
+
+  test(
+    'custom receiver capabilities can allow additional containers',
+    () async {
+      final handoff = handoffFor(
+        capabilities: const PhoneMediaReceiverCapabilities(
+          supportedContainers: {'mkv'},
+          supportedVideoCodecs: {'hevc'},
+        ),
+      );
+      final result = await handoff.start(
+        itemFor(container: 'mkv', videoCodec: 'hevc'),
+      );
+
+      expect(result, isA<PhoneMediaHandoffStarted>());
+      await handoff.stopHandoff();
+    },
+  );
+
+  test('legacy lite receiver mode resolves a conservative local-file '
+      'capability envelope', () async {
+    final handoff = handoffFor(
+      receiverModeContract: legacyModeContract(
+        LegacyReceiverModeId.liteReceiver,
+      ),
+    );
+    final result = await handoff.start(
+      itemFor(container: 'webm', videoCodec: 'vp9'),
+    );
+
+    expect(result, isA<PhoneMediaHandoffUnsupported>());
+    final unsupported = result as PhoneMediaHandoffUnsupported;
+    expect(unsupported.reason, PhoneMediaUnsupportedReason.container);
+    expect(handoff.isServing, isFalse);
+  });
+
+  test(
+    'legacy blocked receiver mode rejects even supported local files',
+    () async {
+      final handoff = handoffFor(
+        receiverModeContract: legacyModeContract(LegacyReceiverModeId.blocked),
+      );
+      final result = await handoff.start(itemFor());
+
+      expect(result, isA<PhoneMediaHandoffUnsupported>());
+      expect(handoff.isServing, isFalse);
+    },
+  );
+
+  test('starts the LAN server and loads a buffered cast request', () async {
+    final handoff = handoffFor();
+    final result = await handoff.start(itemFor());
+
+    expect(result, isA<PhoneMediaHandoffStarted>());
+    final started = result as PhoneMediaHandoffStarted;
+    expect(started.request.url.scheme, 'http');
+    expect(started.request.url.path, endsWith('/media'));
+    expect(started.request.contentType, 'video/mp4');
+    expect(started.request.streamKind, AiroCastMediaStreamKind.buffered);
+    expect(started.request.duration, const Duration(minutes: 90));
+    expect(started.request.title, 'Movie Night');
+    expect(handoff.isServing, isTrue);
+
+    final loaded = castController.currentSessionState.media;
+    expect(loaded, isNotNull);
+    expect(loaded!.url, started.request.url);
+
+    await handoff.stopHandoff();
+  });
+
+  test('does not open a server or report success without a receiver', () async {
+    await castController.disconnect();
+    final handoff = handoffFor();
+
+    final result = await handoff.start(itemFor());
+
+    expect(result, isA<PhoneMediaHandoffFailed>());
+    expect(handoff.isServing, isFalse);
+    expect(
+      castController.recordedActions.where(
+        (action) => action.startsWith('load:'),
+      ),
+      isEmpty,
+    );
+  });
+
+  test('tears down when the controller records a failed media load', () async {
+    castController.failMediaLoad = true;
+    final handoff = handoffFor();
+
+    final result = await handoff.start(itemFor());
+
+    expect(result, isA<PhoneMediaHandoffFailed>());
+    expect(handoff.isServing, isFalse);
+    expect(
+      castController.currentSessionState.phase,
+      AiroCastSessionPhase.failed,
+    );
+  });
+
+  test('stopHandoff stops the server and the cast session', () async {
+    final handoff = handoffFor();
+    await handoff.start(itemFor());
+    expect(handoff.isServing, isTrue);
+
+    await handoff.stopHandoff();
+    expect(handoff.isServing, isFalse);
+    expect(
+      castController.currentSessionState.phase,
+      isNot(AiroCastSessionPhase.playing),
+    );
+  });
+
+  test('server stops when the cast session ends remotely', () async {
+    final handoff = handoffFor();
+    await handoff.start(itemFor());
+    expect(handoff.isServing, isTrue);
+
+    await castController.stop();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(handoff.isServing, isFalse);
+  });
+
+  test('a failed cast load tears the server down', () async {
+    final throwingController = _LoadThrowingController(castController);
+    final handoff = PhoneMediaCastHandoff(
+      castController: throwingController,
+      bindAddress: InternetAddress.loopbackIPv4,
+      debugConnectivityStream: const Stream.empty(),
+    );
+
+    final result = await handoff.start(itemFor());
+    expect(result, isA<PhoneMediaHandoffFailed>());
+    expect(handoff.isServing, isFalse);
+  });
+
+  test(
+    'pausing on the receiver keeps the server alive past the idle timeout',
+    () async {
+      final handoff = PhoneMediaCastHandoff(
+        castController: castController,
+        bindAddress: InternetAddress.loopbackIPv4,
+        idleTimeout: const Duration(milliseconds: 150),
+        pauseKeepAliveInterval: const Duration(milliseconds: 40),
+        debugConnectivityStream: const Stream.empty(),
+      );
+      await handoff.start(itemFor());
+      expect(handoff.isServing, isTrue);
+
+      await castController.pause();
+      // A paused receiver sends no HTTP traffic; without a keep-alive the
+      // file server's own idle timer would treat this as abandonment.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(handoff.isServing, isTrue);
+
+      await handoff.stopHandoff();
+    },
+  );
+
+  test(
+    'keep-alive stops once the receiver resumes playing or the session ends',
+    () async {
+      final handoff = PhoneMediaCastHandoff(
+        castController: castController,
+        bindAddress: InternetAddress.loopbackIPv4,
+        idleTimeout: const Duration(milliseconds: 150),
+        pauseKeepAliveInterval: const Duration(milliseconds: 40),
+        debugConnectivityStream: const Stream.empty(),
+      );
+      await handoff.start(itemFor());
+
+      await castController.pause();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await castController.play();
+      // Resuming stops the keep-alive timer; without further HTTP traffic
+      // the file server's idle timer resumes counting from here.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(handoff.isServing, isFalse);
+
+      await handoff.dispose();
+    },
+  );
+
+  test('server stops when the receiver disconnects', () async {
+    final handoff = handoffFor();
+    await handoff.start(itemFor());
+    expect(handoff.isServing, isTrue);
+
+    await castController.disconnect();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(handoff.isServing, isFalse);
+  });
+
+  test('stops the server when connectivity reports disconnected', () async {
+    final connectivityController = StreamController<List<ConnectivityResult>>();
+    final events = <PhoneMediaDiagnosticEvent>[];
+    addTearDown(connectivityController.close);
+    final handoff = PhoneMediaCastHandoff(
+      castController: castController,
+      bindAddress: InternetAddress.loopbackIPv4,
+      debugConnectivityStream: connectivityController.stream,
+      onDiagnosticEvent: events.add,
+    );
+    await handoff.start(itemFor());
+    expect(handoff.isServing, isTrue);
+
+    connectivityController.add([ConnectivityResult.none]);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(handoff.isServing, isFalse);
+    expect(
+      events.map((event) => event.kind),
+      contains(PhoneMediaDiagnosticEventKind.wifiDisconnectedTeardown),
+    );
+
+    await handoff.dispose();
+  });
+}
+
+LegacyReceiverModeContract legacyModeContract(LegacyReceiverModeId modeId) {
+  return LegacyReceiverModeContract(
+    contractId: 'contract-${modeId.stableId}',
+    modeId: modeId,
+    sourceProfileId: 'profile-1',
+    enabled: modeId != LegacyReceiverModeId.off,
+    activationBlocked: modeId == LegacyReceiverModeId.blocked,
+    recommendedProductProfile: switch (modeId) {
+      LegacyReceiverModeId.blocked => ProductProfileId.embeddedReceiver,
+      LegacyReceiverModeId.off ||
+      LegacyReceiverModeId.liteReceiver ||
+      LegacyReceiverModeId.restrictedLiteReceiver =>
+        ProductProfileId.liteReceiver,
+    },
+    triggers: const [],
+    navigation: const [],
+    homeSections: const [],
+    includedModules: const {},
+    disabledModules: const {},
+    dataBudget: const LegacyReceiverDataBudget(
+      epgPastHours: 0,
+      epgFutureHours: 0,
+      catalogPageSize: 0,
+      maxRecentItems: 0,
+      maxFavoriteItems: 0,
+      allowFullLocalIndex: false,
+      allowBackgroundEnrichment: false,
+    ),
+    visualBudget: const LegacyReceiverVisualBudget(
+      artworkPolicy: LegacyReceiverArtworkPolicy.textOnly,
+      motionPolicy: LegacyReceiverMotionPolicy.none,
+      maxArtworkCacheMb: 0,
+      allowAnimatedPreviews: false,
+      allowBlurEffects: false,
+      allowAutoplayPreviews: false,
+    ),
+    delegationPolicy: LegacyReceiverDelegationPolicy(
+      preferred: const {},
+      required: const {},
+      allowStandalonePlayback: true,
+      allowCompanionDiscovery: true,
+    ),
+    resourceBudget: const ProductResourceBudget(
+      maxMemoryMb: 256,
+      maxStorageMb: 512,
+      maxArtworkCacheMb: 64,
+      maxBackgroundJobs: 1,
+    ),
+    runtimeConstraints: const [],
+    capturedAt: DateTime(2026),
+  );
+}
+
+/// Delegates to the fake for state but fails every media load.
+class _LoadThrowingController implements AiroCastController {
+  _LoadThrowingController(this._inner);
+
+  final FakeAiroCastController _inner;
+
+  @override
+  Future<void> load(AiroCastMediaRequest request) async {
+    throw StateError('receiver rejected the media');
+  }
+
+  @override
+  Stream<AiroCastDiscoveryState> get discoveryStateStream =>
+      _inner.discoveryStateStream;
+
+  @override
+  Stream<AiroCastSessionSnapshot> get sessionStateStream =>
+      _inner.sessionStateStream;
+
+  @override
+  AiroCastDiscoveryState get currentDiscoveryState =>
+      _inner.currentDiscoveryState;
+
+  @override
+  AiroCastSessionSnapshot get currentSessionState => _inner.currentSessionState;
+
+  @override
+  Future<void> initialize() => _inner.initialize();
+
+  @override
+  Future<void> startDiscovery() => _inner.startDiscovery();
+
+  @override
+  Future<void> stopDiscovery() => _inner.stopDiscovery();
+
+  @override
+  Future<void> connect(AiroCastDevice device) => _inner.connect(device);
+
+  @override
+  Future<void> play() => _inner.play();
+
+  @override
+  Future<void> pause() => _inner.pause();
+
+  @override
+  Future<void> stop() => _inner.stop();
+
+  @override
+  Future<void> setVolume(double volume) => _inner.setVolume(volume);
+
+  @override
+  Future<void> disconnect() => _inner.disconnect();
+
+  @override
+  Future<void> dispose() async {}
+}

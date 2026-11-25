@@ -1,0 +1,13 @@
+name: audio_service
+description: Stub implementation of audio_service for TV builds
+version: 0.18.18
+publish_to: none
+
+environment:
+  sdk: '>=3.12.2 <4.0.0'
+  flutter: '>=3.44.4'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  rxdart: ^0.28.0

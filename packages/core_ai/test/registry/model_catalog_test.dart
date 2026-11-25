@@ -1,0 +1,254 @@
+import 'package:core_ai/core_ai.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  group('ModelCatalog web runtime support', () {
+    test('Gemma-4-E2B catalog size matches the published artifact', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'gemma-4-e2b-it-litertlm',
+      );
+
+      expect(model.fileSizeBytes, 2588147712);
+    });
+
+    test('Gemma-4-E2B is flagged web-capable with a .task asset URL', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'gemma-4-e2b-it-litertlm',
+      );
+
+      expect(model.supportsWebRuntime, isTrue);
+      expect(model.quantization, ModelQuantization.mixed);
+      expect(
+        model.webAssetUrl,
+        'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.task',
+      );
+      expect(model.webAssetUrl, isNot(contains('float16')));
+    });
+
+    test('Gemma-4-E4B uses the published quantized package', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'gemma-4-e4b-it-litertlm',
+      );
+
+      expect(model.fileSizeBytes, 3659530240);
+      expect(model.quantization, ModelQuantization.mixed);
+      expect(model.supportsWebRuntime, isTrue);
+      expect(model.downloadUrl, endsWith('gemma-4-E4B-it.litertlm'));
+      expect(
+        model.webAssetUrl,
+        'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.task',
+      );
+      expect(model.webAssetUrl, isNot(contains('float16')));
+    });
+
+    test('Qwen2.5-1.5B is flagged web-capable with a .task asset URL', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'qwen2.5-1.5b-it-litert',
+      );
+
+      expect(model.supportsWebRuntime, isTrue);
+      expect(model.webAssetUrl, isNotNull);
+      expect(model.webAssetUrl, endsWith('.task'));
+    });
+
+    test('non-Gemma models default to web-unsupported', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'mistral-7b-q4',
+      );
+
+      expect(model.supportsWebRuntime, isFalse);
+      expect(model.webAssetUrl, isNull);
+    });
+
+    test('byWebRuntimeSupport returns only web-capable models', () {
+      final webModels = ModelCatalog.webRuntimeSupported;
+
+      expect(webModels, isNotEmpty);
+      expect(webModels.every((m) => m.supportsWebRuntime), isTrue);
+    });
+  });
+
+  group('License compliance (#1630, #1718)', () {
+    test('the default catalog contains no Llama-licensed model', () {
+      expect(
+        ModelCatalog.bundledModels.where(
+          (m) =>
+              m.family == ModelFamily.llama ||
+              (m.license ?? '').toLowerCase().contains('llama'),
+        ),
+        isEmpty,
+        reason:
+            'Llama 3.2 Community License terms do not fit an unconditional '
+            'default registry -- see #1718.',
+      );
+    });
+
+    test('every bundled model declares a structured license string', () {
+      for (final model in ModelCatalog.bundledModels) {
+        expect(
+          model.license,
+          isNotNull,
+          reason: '${model.id} is missing structured license metadata.',
+        );
+        expect(model.license, isNotEmpty);
+      }
+    });
+
+    test(
+      'Gemma 2 2B Instruct downloads from public Unsloth GGUF, not gated Google',
+      () {
+        final model = ModelCatalog.bundledModels.firstWhere(
+          (m) => m.id == 'gemma-2b-it-q4',
+        );
+
+        expect(model.downloadUrl, contains('unsloth/gemma-2-it-GGUF'));
+        expect(model.downloadUrl, contains('gemma-2-2b-it.q4_k_m.gguf'));
+        expect(model.downloadUrl, isNot(contains('google/gemma-2b-it-GGUF')));
+        expect(model.huggingFaceId, 'unsloth/gemma-2-it-GGUF');
+        expect(model.licenseState, ModelLicenseState.open);
+        expect(model.author, 'Unsloth');
+      },
+    );
+  });
+
+  group('EmbeddingGemma catalog entry', () {
+    test('declares only the embeddings capability', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'embeddinggemma-300m-embed',
+      );
+
+      expect(model.capabilities, [ModelCapability.embeddings]);
+      expect(model.fileSizeBytes, 187695104);
+      expect(model.downloadUrl, endsWith('.tflite'));
+    });
+
+    test('text search prefers the smallest text embedding package', () {
+      final selected = selectEmbeddingModel(
+        ModelCatalog.bundledModels,
+        EmbeddingInputKind.text,
+      );
+
+      expect(selected?.id, 'embeddinggemma-2-text-270m-litertlm');
+    });
+
+    test('image and audio embeddings pick the smallest covering package', () {
+      expect(
+        selectEmbeddingModel(
+          ModelCatalog.bundledModels,
+          EmbeddingInputKind.image,
+        )?.id,
+        'embeddinggemma-2-text-vision-440m-litertlm',
+      );
+      expect(
+        selectEmbeddingModel(
+          ModelCatalog.bundledModels,
+          EmbeddingInputKind.audio,
+        )?.id,
+        'embeddinggemma-2-740m-litertlm',
+      );
+    });
+
+    test('the tokenizer entry is not routable via any AiTask', () {
+      final tokenizer = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'embeddinggemma-300m-tokenizer',
+      );
+
+      expect(tokenizer.capabilities, isEmpty);
+      for (final task in AiTask.values.where((t) => t.isCatalogResolvable)) {
+        const router = TaskModelRouter();
+        final resolved = router.resolve(task, [tokenizer]);
+        expect(
+          resolved,
+          isNull,
+          reason: 'the tokenizer must never answer for $task',
+        );
+      }
+    });
+
+    test('EmbeddingGemma 2 is the generic litertlm package', () {
+      final model = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'embeddinggemma-2-text-270m-litertlm',
+      );
+
+      expect(model.fileSizeBytes, 164626432);
+      expect(
+        model.downloadUrl,
+        'https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm/resolve/main/embeddinggemma-2-text-270m.litertlm',
+      );
+      expect(model.downloadUrl, isNot(contains('Qualcomm')));
+      expect(ModelCatalog.companionsFor(model), isEmpty);
+      expect(model.capabilities, [ModelCapability.embeddings]);
+    });
+
+    test('an installed EmbeddingGemma 300M still beats an uninstalled v2', () {
+      final installed = ModelCatalog.bundledModels
+          .firstWhere((m) => m.id == 'embeddinggemma-300m-embed')
+          .copyWith(filePath: '/models/embeddinggemma-300m.tflite');
+      final fresh = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'embeddinggemma-2-text-270m-litertlm',
+      );
+
+      final resolved = const TaskModelRouter().resolve(AiTask.embeddings, [
+        fresh,
+        installed,
+      ]);
+
+      expect(resolved?.id, 'embeddinggemma-300m-embed');
+    });
+
+    test('companionsFor queues the tokenizer with the embed model', () {
+      final embed = ModelCatalog.bundledModels.firstWhere(
+        (m) => m.id == 'embeddinggemma-300m-embed',
+      );
+
+      final companions = ModelCatalog.companionsFor(embed);
+
+      expect(companions.map((m) => m.id), ['embeddinggemma-300m-tokenizer']);
+      expect(ModelCatalog.companionsFor(companions.single), isEmpty);
+    });
+  });
+
+  group('Honest capability tags', () {
+    test(
+      'chat packages that summarize meetings declare meetingSummarization',
+      () {
+        final chatModels = ModelCatalog.bundledModels.where(
+          (model) => model.capabilities.contains(ModelCapability.chat),
+        );
+        expect(
+          chatModels.any(
+            (model) => model.capabilities.contains(
+              ModelCapability.meetingSummarization,
+            ),
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'no catalog row invents vision without image modality or capability',
+      () {
+        for (final model in ModelCatalog.bundledModels) {
+          if (model.capabilities.contains(ModelCapability.imageUnderstanding)) {
+            expect(
+              model.supportsVision ||
+                  model.modalities.contains(ModelModality.image),
+              isTrue,
+              reason: '${model.id} tagged vision without image support',
+            );
+          }
+        }
+      },
+    );
+
+    test('tokenizer companions stay capability-empty', () {
+      final tokenizer = ModelCatalog.bundledModels.where(
+        (model) => model.id.contains('tokenizer'),
+      );
+      for (final model in tokenizer) {
+        expect(model.capabilities, isEmpty);
+      }
+    });
+  });
+}

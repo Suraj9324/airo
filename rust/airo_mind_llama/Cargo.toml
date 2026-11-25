@@ -1,0 +1,111 @@
+[package]
+name = "airo_mind_llama"
+version = "0.1.0"
+edition = "2021"
+description = "Airo Mind generation engine — llama.cpp and its Flutter bridge."
+license = "MIT"
+
+[lib]
+name = "airo_mind_llama"
+# See the note in airo_mind_whisper/Cargo.toml: one library per engine, because
+# the two vendored ggml copies cannot share a linked image. staticlib is built
+# for the same reason it is there -- cargokit's pod flow needs it, and one
+# engine per archive is not the case that fails.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+airo_mind_core = { path = "../airo_mind_core" }
+airo_mind_diarize = { path = "../airo_mind_diarize" }
+airo_mind_meeting = { path = "../airo_mind_meeting" }
+airo_mind_reasoning = { path = "../airo_mind_reasoning" }
+airo_mind_reliability = { path = "../airo_mind_reliability" }
+airo_mind_transcript = { path = "../airo_mind_transcript" }
+flutter_rust_bridge = "=2.11.1"
+# `default-features = false` is a CORRECTNESS setting, not a size one.
+#
+# llama-cpp-2's default features include `openmp` and `android-shared-stdcxx`,
+# neither of which this crate wants: `openmp` costs nothing to drop because the
+# Supervisor owns the CPU budget (`C6`) and the engine is pinned to one thread,
+# and the Android stdc++ linkage is a per-target concern this Cargo.toml does
+# not decide unilaterally.
+#
+# `common` is re-enabled explicitly below, in the `llama` feature union, for two
+# things, and the second one is a safety requirement rather than a convenience:
+#
+#  1. `LlamaSampler::grammar` -- the GBNF-constrained sampler -- which
+#     llama-cpp-2 0.1.153 only exposes behind it (the vocab pointer a manual FFI
+#     call would need is `pub(crate)` inside llama-cpp-2 itself; there is no way
+#     to call the grammar-init C API from outside the crate without it).
+#  2. `LlamaSampler::try_accept`, which is the ONLY way to see that a grammar has
+#     reached a terminal state (`#1739`). Without it, `accept` silently swallows
+#     llama.cpp's "empty grammar stack" exception, the stacks stay empty, and the
+#     next `sample` hits `GGML_ASSERT(!stacks.empty())` -- an `abort()` that takes
+#     the whole app process down. `llama.rs`'s generation loop depends on this;
+#     dropping `common` while `grammar` is still reachable reintroduces a
+#     process-crash bug, it does not merely shrink the binary.
+#
+# Enabling
+# `common` DOES compile `download.cpp` and `hf-cache.cpp` into the binary --
+# they are unconditional sources in llama.cpp's own `common/CMakeLists.txt`,
+# not gated on curl -- but `llama-cpp-sys-2`'s build.rs sets `LLAMA_CURL=OFF`
+# unconditionally regardless of this feature (verified in its `build.rs`), so
+# no HTTP client is linked and no network capability is compiled in. `ADR-0018
+# §1`'s "cloud optional, never cloud required" claim survives: the extra
+# source is dead code with no way to reach the network, not a live downloader.
+# Flagged here because it is a real, if inert, growth in what's linked -- worth
+# knowing about at the next binary-size review.
+llama-cpp-2 = { version = "0.1.153", optional = true, default-features = false }
+# Re-exported by llama-cpp-2 for token_to_piece; pinned to the version it uses.
+encoding_rs = { version = "0.8", optional = true }
+# RuntimeStats' peak-RSS reading (`getrusage` on macOS/iOS/Linux/Android).
+# Already a workspace dependency (`airo_core`), so this adds no new crate to
+# the lockfile, only a new consumer of one already vetted and pinned.
+libc = { version = "0.2", optional = true }
+
+# Metal acceleration, macOS only.
+#
+# llama-cpp-sys-2's build.rs does not read a Rust-level `metal` feature at
+# all -- llama.cpp's own CMakeLists.txt defaults GGML_METAL to ON for every
+# Apple target, so this crate has in practice already been linking Metal on
+# macOS regardless of any Cargo feature. This entry makes that an explicit,
+# checked contract instead of an implicit upstream default, and future-proofs
+# against llama-cpp-2 someday consuming its own declared
+# `metal = ["llama-cpp-sys-2/metal"]` feature (present in its Cargo.toml but
+# currently unread by the sys crate's build script).
+#
+# This is a target-specific *addition* to the `llama-cpp-2` dependency above,
+# not a second copy of it -- Cargo unifies the feature set for a resolved
+# target across every table naming the dependency, and this table is gated on
+# `cfg(target_os = "macos")` so it never reaches the Android cargokit build
+# (`android-arm64` only, see `android/build.gradle`) or the default (no
+# `llama` feature) boundary build. iOS is out of scope --
+# `packages/feature_mind/ios/feature_mind.podspec` documents iOS as not
+# building at all yet (#1546 phase 4).
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.153", optional = true, default-features = false, features = [
+  "metal",
+] }
+
+[features]
+default = []
+# Real offline generation. Requires cmake and a C++ toolchain.
+llama = ["dep:llama-cpp-2", "dep:encoding_rs", "dep:libc", "llama-cpp-2/common"]
+# Documents the macOS Metal contract explicitly (see the target-specific
+# dependency table above); does not change what gets linked on macOS, since
+# Metal is already unified in automatically for `cfg(target_os = "macos")`
+# builds. Kept as a real, buildable feature name so `cargo build --features
+# "llama,metal"` matches this milestone's stated acceptance check, and so a
+# non-macOS build has a named flag available (a no-op there, since the
+# target-specific table above simply does not apply).
+metal = ["llama"]
+# Windows CUDA testing seam. Named now so a later Windows box with the CUDA
+# toolkit can opt in without a protocol change (`AccelBackend::Cuda` already
+# exists in `airo_mind_core::bench`). This does **not** enable llama-cpp-2's
+# CUDA backend today: that feature pulls the NVIDIA toolkit into every
+# consumer of `airo_mind_llama`, including Android/macOS CI that cannot
+# compile it. Turning this into `cuda = ["llama", "llama-cpp-2/cuda"]` is
+# the Windows-rig change, gated on a machine that actually has nvcc.
+cuda = ["llama"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

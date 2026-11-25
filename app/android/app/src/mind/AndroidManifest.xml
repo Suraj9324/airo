@@ -1,0 +1,153 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+    <!-- Airo Mind variant manifest. Replaces src/main when APP_VARIANT=mind.
+         It reuses the product MainActivity (see app/android/app/build.gradle.kts)
+         but drops what the full app declares and Mind must not claim:
+         the airo://iptv scheme, the /airo/iptv app link, and
+         picture-in-picture. -->
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Scribe records meetings on device. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <!-- Bug-report attachments (image_picker). Declared not-required so Play
+         does not filter Airo Mind off camera-less devices — nothing in Mind
+         needs a camera to work, and the picker falls back to the gallery. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false"/>
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false"/>
+
+    <!-- flutter_local_notifications reschedules across reboot; without this
+         (and the receivers below) every scheduled agent notification is lost
+         on restart. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
+    <!-- audio_service: MainActivity extends AudioServiceFragmentActivity and
+         pubspec_mind.yaml keeps the plugin real, so the service below must be
+         declared and permitted. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <!-- Model downloads run through platform_downloads' WorkManager foreground
+         service; without the dataSync type here the first download crashes with
+         "foregroundServiceType 0x00000001 is not a subset of ... 0x00000000". -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- MeetingRecordingService (#1656 AC2): required on Android 14+ to run
+         a foreground service of type microphone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+
+    <application
+        android:label="${appLabel}"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowBackup="false"><!--
+        allowBackup is off deliberately. Airo Mind's whole claim is that
+        meetings, transcripts and the vault stay on the device; Android Auto
+        Backup would copy that database and its preferences to the user's
+        Google Drive without them ever asking. The product ships its own
+        explicit transfer paths instead (Settings -> Backup and restore:
+        encrypted file export and LAN share), so nothing is lost by turning
+        the implicit one off. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+        <!-- Optional GPU acceleration libraries used by LiteRT-LM. -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL-car.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL-pixel.so"
+            android:required="false" />
+
+        <!-- WorkManager foreground service type mapping for model downloads
+             (platform_downloads). Mirrors src/main; this manifest replaces
+             main, so the mapping must be restated here. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            tools:node="merge" />
+
+        <!-- audio_service background playback. -->
+        <service
+            android:name="com.ryanheise.audioservice.AudioService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+        <receiver
+            android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Mic-use notification for in-app meeting capture (#1656 AC2). -->
+        <service
+            android:name=".MeetingRecordingService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
+        <!-- flutter_local_notifications: persist scheduled agent
+             notifications across process death and restore them after
+             reboot. This manifest replaces src/main rather than merging with
+             it, and the plugin's own AAR manifest declares neither receiver,
+             so without these two entries `zonedSchedule` succeeds and the
+             notification simply never arrives. -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
+            android:exported="false" />
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

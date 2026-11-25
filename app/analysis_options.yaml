@@ -1,0 +1,118 @@
+# This file configures the analyzer, which statically analyzes Dart code to
+# check for errors, warnings, and lints.
+#
+# The issues identified by the analyzer are surfaced in the UI of Dart-enabled
+# IDEs (https://dart.dev/tools#ides-and-editors). The analyzer can also be
+# invoked from the command line by running `flutter analyze`.
+
+# The following line activates a set of recommended lints for Flutter apps,
+# packages, and plugins designed to encourage good coding practices.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  # Enable custom_lint plugin
+  plugins:
+    - custom_lint
+
+  exclude:
+    - "build/**"
+    - ".dart_tool/**"
+    - "**/generated/**"
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    # Patrol suites resolve only under the patrol flavour. `patrol` is not a
+    # dependency of app/pubspec.yaml -- the flavour pubspecs are separate, so a
+    # dependency in one is invisible to the others -- which makes every symbol
+    # in these files unresolvable in the default analysis and produced 12 hard
+    # errors that failed `analyze` and `code-quality` on every PR. Analysing
+    # them here checks nothing; it only hides the errors that matter.
+    - "integration_test/patrol_test.dart"
+    - "patrol_test/**"
+    # `main_mind.dart` is the standalone Mind shell's entrypoint and is never
+    # part of the phone flavour's own route tree or build target, even though
+    # `feature_mind` became a phone dependency in the Phase 2 SSOT merge
+    # (`docs/superpowers/plans/2026-08-07-airo-mind-ssot-plan.md`) — the
+    # assistant hub the phone flavour ships now lives in that package. This
+    # file and `lib/core/mind/**` stay excluded because they are the *other*
+    # entrypoint's composition root, analysed instead under
+    # `pubspec_mind.yaml` where its shell-specific wiring (legacy `/agent*`
+    # redirects, `MindUnavailableScreen`) is what's actually being checked.
+    #
+    # The shell's own suite lives in `test_mind/`, excluded for the same
+    # reason. `flutter test` with no arguments walks `test/` only, so the
+    # phone suite never tries to run the Mind shell's tests.
+    #
+    # These files ARE covered, by the `airo-mind-shell` job in
+    # `.github/workflows/pr-checks.yml` and `.github/workflows/ci.yml`. It
+    # swaps in the expanded `app/pubspec_mind.yaml`, then analyses, tests and
+    # compiles the entrypoint against it:
+    #
+    #   cp app/pubspec_mind.yaml app/pubspec.yaml
+    #   cp app/analysis_options_mind.yaml app/analysis_options.yaml
+    #   cd app && flutter pub get
+    #   flutter analyze --no-fatal-infos --no-fatal-warnings \
+    #     lib/main_mind.dart lib/core/mind
+    #   flutter test test_mind/
+    #   flutter build bundle --target=lib/main_mind.dart \
+    #     --dart-define=APP_VARIANT=mind
+    #
+    # The second `cp` is not optional. Excludes are not overridable from the
+    # command line: with this file in place, `dart analyze lib/main_mind.dart`
+    # reports "No issues found!" even on an injected hard type error.
+    # `app/analysis_options_mind.yaml` is the same configuration with the Mind
+    # paths un-excluded.
+    #
+    # The Android APK is NOT part of this job, and no longer because it is
+    # broken -- that note was stale. The vendored cargokit gradle plugin has
+    # been patched off the removed `Project.exec()` onto `ExecOperations`, and
+    # the APK builds, installs and runs on device (#1550).
+    #
+    # Build it with `scripts/build-mind.sh`, which pins
+    # `--target-platform=android-arm64`: `llama-cpp-sys-2`'s build script
+    # panics on `armv7-linux-androideabi`, and Mind is an arm64 product. Note
+    # that cross-compiling `whisper-rs-sys` from a macOS host still fails to
+    # link (`ggml-blas`) because its build script evaluates `cfg!(macos)` on
+    # the HOST; a Linux runner builds it.
+    - "lib/main_mind.dart"
+    - "lib/core/mind/**"
+    - "test_mind/**"
+
+  # Treat warnings as info to prevent CI failures on non-critical issues
+  # Errors will still cause CI to fail
+  errors:
+    # Treat unused code warnings as info
+    unused_import: info
+    unused_local_variable: info
+    unused_field: info
+    unused_result: info
+    # Treat deprecated API usage as info
+    deprecated_member_use: info
+    # Treat style issues as info
+    avoid_print: info
+    unnecessary_underscores: info
+    unnecessary_import: info
+    # Keep type errors as warnings (will fail CI)
+    invalid_return_type_for_catch_error: warning
+    override_on_non_overriding_member: warning
+    # Keep async issues as info
+    use_build_context_synchronously: info
+
+linter:
+  # The lint rules applied to this project can be customized in the
+  # section below to disable rules from the `package:flutter_lints/flutter.yaml`
+  # included above or to enable additional rules. A list of all available lints
+  # and their documentation is published at https://dart.dev/lints.
+  #
+  # Instead of disabling a lint rule for the entire project in the
+  # section below, it can also be suppressed for a single line of code
+  # or a specific dart file by using the `// ignore: name_of_lint` and
+  # `// ignore_for_file: name_of_lint` syntax on the line or in the file
+  # producing the lint.
+  rules:
+    # Disable avoid_print for development (use proper logging in production)
+    avoid_print: false
+    # Enable single quotes
+    prefer_single_quotes: true
+
+# Additional information about this file can be found at
+# https://dart.dev/guides/language/analysis-options

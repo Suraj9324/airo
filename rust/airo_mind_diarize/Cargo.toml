@@ -1,0 +1,34 @@
+[package]
+name = "airo_mind_diarize"
+version = "0.1.0"
+edition = "2021"
+description = "Airo Mind speaker diarization — Wave 3 scaffolding between ASR segments and Meeting IR."
+license = "MIT"
+publish = false
+
+[lib]
+name = "airo_mind_diarize"
+# rlib only. ECAPA-TDNN / online clustering will link here later; no FFI
+# surface until a cdylib owner needs one.
+crate-type = ["rlib"]
+
+[dependencies]
+airo_mind_core = { path = "../airo_mind_core" }
+airo_mind_transcript = { path = "../airo_mind_transcript" }
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray"], optional = true }
+realfft = "3"
+rustfft = "6"
+
+[features]
+default = []
+# ONNX Runtime ECAPA inference — enabled on product whisper builds that bundle ORT.
+ecapa-ort = ["dep:ort"]
+# Copy ORT dylibs next to build artifacts — set ORT_LIB_LOCATION before building.
+ecapa-ort-bundle = ["ecapa-ort", "ort/copy-dylibs"]
+
+[[test]]
+name = "ecapa_onnx_e2e"
+required-features = ["ecapa-ort"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

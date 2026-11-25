@@ -1,0 +1,235 @@
+# TV-specific pubspec - excludes heavy dependencies (stockfish, flame, mlkit)
+# This file reduces APK size from ~145MB to ~28MB for Android TV builds
+#
+# Usage: Copy this to pubspec.yaml before TV builds, or use the build script
+# Heavy dependencies excluded:
+# - stockfish: 1.8.1 (~108MB native libs)
+# - flame: 1.35.0 + flame_audio: 2.11.13 (~5MB)
+# - google_mlkit_text_recognition: 0.16.0 (~10MB)
+# - chess: 0.8.1 (requires stockfish)
+
+name: airo_app
+description: "Aika Stream - bring-your-own-playlist player for Android TV"
+publish_to: 'none'
+version: 0.0.4+30
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+  flutter: ">=3.44.4"
+
+# Keep TV release builds offline-safe by loading the native library already
+# supplied by sqlite3_flutter_libs.
+hooks:
+  user_defines:
+    sqlite3:
+      source: system
+      name: sqlite3
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # Routing & Navigation
+  go_router: 17.1.0
+
+  # State Management
+  riverpod: 3.4.2
+  flutter_riverpod: 3.4.2
+
+  # Storage & Persistence
+  shared_preferences: ^2.5.5
+  drift: ^2.18.0
+  sqlite3_flutter_libs: ^0.5.41
+  path: 1.9.1
+  path_provider: ^2.1.6
+
+  # Connectivity
+  connectivity_plus: ^7.1.1
+
+  # Networking
+  dio: ^5.10.0
+
+  # Firebase & Authentication
+  firebase_core: 4.4.0
+  firebase_auth: 6.1.4
+  google_sign_in: 7.2.0
+
+  # Audio & Media
+  # Keep audio_service real because Android MainActivity extends its activity.
+  audio_service: 0.18.18
+  video_player: ^2.13.0
+  flutter_chrome_cast: ^1.4.6
+  wakelock_plus: 1.6.1
+  pdfx: 2.9.2
+  flutter_local_notifications: 20.1.0
+  timezone: 0.10.1
+
+  # Utilities
+  intl: 0.20.2
+  uuid: 4.5.2
+
+  # Local packages - Core
+  core_domain:
+    path: ../packages/core_domain
+  core_data:
+    path: ../packages/core_data
+  # Phase 1 streaming telemetry consent (F7.5) -- app/lib wires
+  # AiroLocalDiagnosticsAnalyticsService + AiroAnalyticsConsentState
+  # directly, so both need to be direct deps here, not just transitive
+  # via feature_iptv -> platform_media -> core_analytics.
+  core_analytics:
+    path: ../packages/core_analytics
+  platform_media:
+    path: ../packages/platform_media
+  core_ui:
+    path: ../packages/core_ui
+  core_ai:
+    path: ../packages/core_ai
+  core_auth:
+    path: ../packages/core_auth
+  airo_pro_bootstrap:
+    path: ../packages/airo_pro_bootstrap
+  core_app_shell:
+    path: ../packages/core_app_shell
+  core_entitlements:
+    path: ../packages/core_entitlements
+  core_product_shell:
+    path: ../packages/core_product_shell
+
+  # Local packages - Features (only IPTV-related)
+  airo:
+    path: ../packages/airo
+  feature_iptv:
+    path: ../packages/feature_iptv
+  platform_streaming_engine:
+    path: ../packages/platform_streaming_engine
+  platform_ads:
+    path: ../packages/platform_ads
+
+  # UI
+  cupertino_icons: ^1.0.9
+  equatable: ^2.1.0
+  cached_network_image: 3.4.1
+
+  # TV-specific
+  package_info_plus: 10.2.0
+
+  # In-app AdMob Native Advanced (phone/tablet only at runtime).
+  # 7.0.0 is the first release that configures on Gradle 9 (6.0.0 dies on
+  # `configurations.all`). Keep below 8.x unless we need a newer GMA SDK.
+  google_mobile_ads: 7.0.0
+
+  # Dependencies with stub overrides (required for compilation but using lightweight stubs)
+  # These are overridden by dependency_overrides section below
+  stockfish: 1.8.1
+  chess: 0.8.1
+  flame: 1.35.0
+  google_mlkit_text_recognition: 0.16.0
+  google_mlkit_image_labeling: 0.15.0
+  just_audio: 0.10.5
+  audioplayers: 6.5.1
+  flutter_tts: 4.2.5
+  image_picker: 1.2.1
+  file_picker: 10.3.10
+  share_plus: 10.1.4
+  url_launcher: 6.3.2
+  flutter_image_compress: 2.4.0
+  flutter_contacts: 1.1.9+2
+  permission_handler: 12.0.0+1
+
+  # EXCLUDED for TV builds (heavy dependencies):
+  # - flame: 1.35.0 (game engine - not needed)
+  # - flame_audio: 2.11.13 (game audio - not needed)
+  # - chess: 0.8.1 (chess logic - not needed)
+  # - stockfish: 1.8.1 (chess AI - 108MB native libs!)
+  # - google_mlkit_text_recognition: 0.16.0 (OCR - not needed)
+  # - audio_service native Android activity is still required by MainActivity
+  # - just_audio: (music player - not needed)
+  # - audioplayers: (game audio - not needed)
+  # - flutter_tts: (TTS - not needed)
+  # - flutter_contacts: (contacts - not needed)
+  # - permission_handler: (permissions - TV has limited permissions)
+  # - image_picker: (camera - not on TV)
+  # - file_picker: (file picker - limited on TV)
+  # - share_plus: (sharing - not on TV)
+  # - screenshot: (screenshots - not needed)
+  # - flutter_image_compress: (image compression - not needed)
+  # - flutter_local_notifications: (notifications - TV uses different approach)
+  # - feature_coin: (finance vault features - not on TV)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+  flutter_native_splash: ^2.4.8
+
+# Dependency overrides - point heavy packages to lightweight stubs
+# This allows code that imports these packages to compile while
+# avoiding the heavy native libraries
+dependency_overrides:
+  video_player_android:
+    path: ../packages/platform_player/third_party/video_player_android
+  video_player_avfoundation:
+    path: ../packages/platform_player/third_party/video_player_avfoundation
+  rxdart: ^0.28.0
+  flutter_chrome_cast:
+    path: ../packages/platform_player/third_party/flutter_chrome_cast
+
+  # Heavy native library stubs (major size savings)
+  stockfish:
+    path: ../packages/stubs/stockfish_stub
+  chess:
+    path: ../packages/stubs/chess_stub
+  flame:
+    path: ../packages/stubs/flame_stub
+  google_mlkit_text_recognition:
+    path: ../packages/stubs/mlkit_stub
+  google_mlkit_image_labeling:
+    path: ../packages/stubs/mlkit_image_labeling_stub
+
+  # Audio package stubs (not needed for TV)
+  just_audio:
+    path: ../packages/stubs/just_audio_stub
+  audioplayers:
+    path: ../packages/stubs/audioplayers_stub
+
+  # Utility package stubs (limited functionality on TV)
+  flutter_tts:
+    path: ../packages/stubs/flutter_tts_stub
+  image_picker:
+    path: ../packages/stubs/image_picker_stub
+  file_picker:
+    path: ../packages/stubs/file_picker_stub
+  share_plus:
+    path: ../packages/stubs/share_plus_stub
+  flutter_image_compress:
+    path: ../packages/stubs/flutter_image_compress_stub
+  flutter_contacts:
+    path: ../packages/stubs/flutter_contacts_stub
+  permission_handler:
+    path: ../packages/stubs/permission_handler_stub
+  flutter_local_notifications:
+    path: ../packages/stubs/flutter_local_notifications_stub
+  # platform_media stays in the shared IPTV graph, but Airo TV intentionally
+  # ships video_player only. Replace media_kit's Android native bundle with a
+  # no-plugin package so Flutter does not register a plugin whose excluded
+  # libmpv/helper binaries cannot load.
+  media_kit_libs_android_video:
+    path: ../packages/stubs/media_kit_libs_android_video_stub
+  timezone:
+    path: ../packages/stubs/timezone_stub
+  pdfx:
+    path: ../packages/stubs/pdfx_stub
+  package_info_plus:
+    path: ../packages/stubs/package_info_plus_stub
+  # KGP-free Android implementation used by the TV flavor. This must remain
+  # functional: live playback relies on it to suppress Fire OS screen sleep.
+  wakelock_plus:
+    path: ../packages/stubs/wakelock_plus_stub
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/airo_icon.png

@@ -1,0 +1,390 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+import 'package:platform_player/platform_player.dart';
+import 'package:video_player/video_player.dart';
+
+/// Concrete [AiroPlaybackEngine] wrapping the `video_player` package
+/// (ExoPlayer / AVPlayer / `<video>` depending on platform). This is the
+/// `videoPlayer` default engine the design's resolver picks for
+/// Web/Android/Android TV/iOS/macOS.
+///
+/// Note: `AiroPlaybackSourceHandle.value` is expected to already be a
+/// directly-openable URI by the time it reaches this engine. Resolving an
+/// opaque handle token into a real URL (e.g. via a proxy/token layer) is out
+/// of scope here — this engine only consumes the handle's value as-is.
+
+/// Extracts an HTTP status code from a raw platform player error string
+/// (ExoPlayer's `InvalidResponseCodeException: Response code: 403`, or an
+/// `HTTP 403` style message). Returns null when no status is present —
+/// conservative on purpose: a bare 3-digit number in an arbitrary error
+/// string is not necessarily an HTTP status, so only explicit markers are
+/// recognized.
+int? httpStatusFromPlayerError(String errorText) {
+  final match =
+      RegExp(r'Response code:\s*(\d{3})').firstMatch(errorText) ??
+      RegExp(r'HTTP[/\s](\d{3})').firstMatch(errorText);
+  if (match == null) return null;
+  return int.tryParse(match.group(1)!);
+}
+
+class VideoPlayerAiroPlaybackEngine implements AiroPlaybackEngine {
+  VideoPlayerController? _controller;
+  AiroPlaybackState _state = AiroPlaybackState.idle(
+    backendKind: AiroPlaybackBackendKind.videoPlayer,
+  );
+  AiroPlaybackEnginePhase? _prebufferPhase;
+  final StreamController<AiroPlaybackState> _stateController =
+      StreamController<AiroPlaybackState>.broadcast();
+  final AiroSpatialAudioEngineDelegate _spatial = AiroSpatialAudioEngineDelegate(
+    backendKind: AiroPlaybackBackendKind.videoPlayer,
+  );
+
+  @override
+  AiroPlaybackBackendKind get backendKind =>
+      AiroPlaybackBackendKind.videoPlayer;
+
+  @override
+  AiroSpatialAudioMode get spatialAudioMode => _spatial.mode;
+
+  @override
+  Future<AiroSpatialAudioTapStatus> querySpatialAudioTap() =>
+      _spatial.queryTapStatus();
+
+  @override
+  Future<AiroPlaybackState> setSpatialAudioMode(AiroSpatialAudioMode mode) async {
+    await _spatial.setMode(mode);
+    return _state;
+  }
+
+  @override
+  Stream<AiroPlaybackState> get states => _stateController.stream;
+
+  @override
+  AiroPlaybackState get currentState => _state;
+
+  @override
+  Future<AiroPlaybackState> open(AiroMediaOpenRequest request) async {
+    _emit(
+      _state.copyWith(
+        phase: AiroPlaybackEnginePhase.opening,
+        request: request,
+        position: request.startPosition,
+      ),
+    );
+
+    await _disposeController();
+
+    final sourceUri = Uri.parse(request.sourceHandle.value);
+    final options = VideoPlayerOptions(
+      mixWithOthers: request.mixWithOthers,
+      allowBackgroundPlayback: request.allowBackgroundPlayback,
+    );
+    final controller = sourceUri.scheme == 'content'
+        ? VideoPlayerController.contentUri(
+            sourceUri,
+            videoPlayerOptions: options,
+          )
+        : VideoPlayerController.networkUrl(
+            sourceUri,
+            httpHeaders: request.httpHeaders,
+            videoPlayerOptions: options,
+          );
+    _controller = controller;
+
+    try {
+      await controller.initialize();
+    } on TimeoutException {
+      return _fail(AiroPlaybackErrorCode.networkUnavailable, 'open', request);
+    } on PlatformException catch (e) {
+      return _fail(
+        AiroPlaybackErrorCode.decoderFailed,
+        'open',
+        request,
+        httpStatusCode: httpStatusFromPlayerError(
+          '${e.message ?? ''} ${e.details ?? ''}',
+        ),
+      );
+    } on Object {
+      return _fail(AiroPlaybackErrorCode.backendUnavailable, 'open', request);
+    }
+
+    if (request.startPosition > Duration.zero) {
+      await controller.seekTo(request.startPosition);
+    }
+    await controller.setVolume(_state.volume);
+    await controller.setPlaybackSpeed(_state.playbackSpeed);
+    controller.addListener(_onControllerValueChanged);
+    final videoSize = controller.value.size;
+    final hasVideoSize = videoSize.width > 0 && videoSize.height > 0;
+
+    _emit(
+      _state.copyWith(
+        phase: AiroPlaybackEnginePhase.open,
+        request: request,
+        position: request.startPosition,
+        duration: controller.value.duration,
+        qualityOptions: hasVideoSize
+            ? [
+                AiroPlaybackQualityOption(
+                  id: 'source',
+                  label:
+                      '${videoSize.width.round()}x${videoSize.height.round()}',
+                  width: videoSize.width.round(),
+                  height: videoSize.height.round(),
+                ),
+              ]
+            : const [],
+        selectedQualityId: hasVideoSize ? 'source' : null,
+        tracks: externalSubtitleTracksFor(request),
+        diagnostics: AiroPlaybackDiagnostics(
+          backendId: backendKind.stableId,
+          // The video_player plugin doesn't expose which decode path
+          // ExoPlayer actually chose -- it auto-selects hardware vs.
+          // software per-codec with no signal surfaced to this layer.
+          // hardwareAccelerated stays null (unknown) rather than a
+          // fabricated true, since a diagnostic value someone might use
+          // to debug a decode problem must not lie about the one thing
+          // it's meant to report.
+          hardwareAccelerated: null,
+        ),
+      ),
+    );
+    return _state;
+  }
+
+  /// Continuously mirrors `VideoPlayerController.value` into
+  /// [AiroPlaybackState], fired on every native player update (position
+  /// ticks, buffering transitions, errors) — not just on explicit method
+  /// calls. This is what lets [AiroPlaybackEngine] consumers (progress bars,
+  /// buffer-health monitors, live-edge detectors) observe playback without
+  /// holding a reference to the raw controller.
+  void _onControllerValueChanged() {
+    final controller = _controller;
+    if (controller == null) return;
+    final value = controller.value;
+
+    if (value.hasError) {
+      _fail(
+        AiroPlaybackErrorCode.decoderFailed,
+        'playback',
+        _state.request,
+        httpStatusCode: httpStatusFromPlayerError(value.errorDescription ?? ''),
+      );
+      return;
+    }
+
+    AiroPlaybackEnginePhase nextPhase;
+    if (value.isBuffering) {
+      if (_state.phase != AiroPlaybackEnginePhase.buffering) {
+        _prebufferPhase = _state.phase;
+      }
+      nextPhase = AiroPlaybackEnginePhase.buffering;
+    } else if (_state.phase == AiroPlaybackEnginePhase.buffering) {
+      nextPhase = _prebufferPhase ?? AiroPlaybackEnginePhase.playing;
+      _prebufferPhase = null;
+    } else {
+      nextPhase = _state.phase;
+    }
+
+    _emit(
+      _state.copyWith(
+        phase: nextPhase,
+        position: value.position,
+        duration: value.duration,
+        bufferedRanges: value.buffered
+            .map((r) => AiroPlaybackBufferedRange(start: r.start, end: r.end))
+            .toList(),
+      ),
+    );
+  }
+
+  @override
+  Future<AiroPlaybackState> play() async {
+    await _controller?.play();
+    return _transition(AiroPlaybackEnginePhase.playing);
+  }
+
+  @override
+  Future<AiroPlaybackState> pause() async {
+    await _controller?.pause();
+    return _transition(AiroPlaybackEnginePhase.paused);
+  }
+
+  @override
+  Future<AiroPlaybackState> stop() async {
+    await _controller?.pause();
+    await _controller?.seekTo(Duration.zero);
+    _emit(
+      _state.copyWith(
+        phase: AiroPlaybackEnginePhase.stopped,
+        position: Duration.zero,
+      ),
+    );
+    return _state;
+  }
+
+  @override
+  Future<AiroPlaybackState> seek(Duration position) async {
+    // Preserve whether playback was actively playing (or buffering while
+    // playing) before the seek, rather than unconditionally dropping to
+    // `paused`. A seek must not silently regress `isPlaying` to false for
+    // callers mid-playback (center play/pause button, wakelock, the Go-Live
+    // button, and drift auto-resync all key off this phase). A seek that
+    // genuinely happens while paused should still result in `paused`.
+    final wasPlaying =
+        _state.phase == AiroPlaybackEnginePhase.playing ||
+        _state.phase == AiroPlaybackEnginePhase.buffering;
+    await _controller?.seekTo(position);
+    _emit(
+      _state.copyWith(
+        phase: wasPlaying
+            ? AiroPlaybackEnginePhase.playing
+            : AiroPlaybackEnginePhase.paused,
+        position: position,
+      ),
+    );
+    return _state;
+  }
+
+  @override
+  Future<AiroPlaybackState> setVolume(double volume) async {
+    final clamped = volume.clamp(0, 1).toDouble();
+    await _controller?.setVolume(clamped);
+    _emit(_state.copyWith(volume: clamped));
+    return _state;
+  }
+
+  @override
+  Future<AiroPlaybackState> setPlaybackSpeed(double speed) async {
+    await _controller?.setPlaybackSpeed(speed);
+    _emit(_state.copyWith(playbackSpeed: speed));
+    return _state;
+  }
+
+  @override
+  Future<AiroPlaybackState> selectQuality(String qualityId) async {
+    return _fail(
+      AiroPlaybackErrorCode.qualityUnavailable,
+      'selectQuality',
+      _state.request,
+    );
+  }
+
+  @override
+  Future<AiroPlaybackState> selectTrack({
+    required AiroPlaybackTrackKind kind,
+    required String trackId,
+  }) async {
+    final matches = _state.tracks.where(
+      (t) => t.kind == kind && t.id == trackId,
+    );
+    if (matches.isEmpty) {
+      return _fail(
+        AiroPlaybackErrorCode.trackUnavailable,
+        'selectTrack',
+        _state.request,
+      );
+    }
+    // video_player has no built-in track switch; for external subtitle tracks
+    // the app-layer subtitle renderer consumes selectedTrackIds directly. This
+    // engine only records the selection.
+    final nextSelected = Map<AiroPlaybackTrackKind, String>.from(
+      _state.selectedTrackIds,
+    )..[kind] = trackId;
+    _emit(_state.copyWith(selectedTrackIds: nextSelected));
+    return _state;
+  }
+
+  @override
+  Future<AiroPlaybackState> clearTrackSelection(
+    AiroPlaybackTrackKind kind,
+  ) async {
+    final nextSelected = Map<AiroPlaybackTrackKind, String>.from(
+      _state.selectedTrackIds,
+    )..remove(kind);
+    _emit(_state.copyWith(selectedTrackIds: nextSelected));
+    return _state;
+  }
+
+  @override
+  Future<AiroPlaybackDiagnostics> diagnostics() async {
+    return _state.diagnostics ??
+        AiroPlaybackDiagnostics(backendId: backendKind.stableId);
+  }
+
+  @override
+  Future<AiroPlaybackState> enterPictureInPicture() async {
+    return _fail(
+      AiroPlaybackErrorCode.unsupportedOperation,
+      'enterPictureInPicture',
+      _state.request,
+    );
+  }
+
+  @override
+  Future<AiroPlaybackState> exitPictureInPicture() async {
+    return _fail(
+      AiroPlaybackErrorCode.unsupportedOperation,
+      'exitPictureInPicture',
+      _state.request,
+    );
+  }
+
+  @override
+  Widget? buildView() {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return null;
+    return SizedBox(
+      width: controller.value.size.width,
+      height: controller.value.size.height,
+      child: VideoPlayer(controller),
+    );
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _disposeController();
+    await _stateController.close();
+  }
+
+  Future<void> _disposeController() async {
+    final controller = _controller;
+    _controller = null;
+    controller?.removeListener(_onControllerValueChanged);
+    await controller?.dispose();
+  }
+
+  AiroPlaybackState _transition(AiroPlaybackEnginePhase phase) {
+    _emit(_state.copyWith(phase: phase));
+    return _state;
+  }
+
+  AiroPlaybackState _fail(
+    AiroPlaybackErrorCode code,
+    String operation,
+    AiroMediaOpenRequest? request, {
+    int? httpStatusCode,
+  }) {
+    _emit(
+      _state.copyWith(
+        phase: AiroPlaybackEnginePhase.failed,
+        request: request,
+        error: AiroPlaybackError(
+          code: code,
+          operation: operation,
+          httpStatusCode: httpStatusCode,
+        ),
+      ),
+    );
+    return _state;
+  }
+
+  void _emit(AiroPlaybackState state) {
+    _state = state;
+    if (!_stateController.isClosed) {
+      _stateController.add(state);
+    }
+  }
+}

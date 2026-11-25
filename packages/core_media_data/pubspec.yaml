@@ -1,0 +1,20 @@
+name: core_media_data
+description: Reusable media data benchmark contracts for Airo products.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=1.17.0"
+
+dependencies:
+  core_native:
+    path: ../core_native
+  equatable: ^2.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

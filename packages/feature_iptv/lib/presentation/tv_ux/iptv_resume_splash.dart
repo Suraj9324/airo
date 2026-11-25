@@ -1,0 +1,113 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+class IptvResumeSplash extends StatefulWidget {
+  const IptvResumeSplash({
+    super.key,
+    required this.playbackReady,
+    required this.onFinished,
+    this.onSkipped,
+    this.minDisplay = const Duration(milliseconds: 500),
+    this.maxDisplay = const Duration(seconds: 2),
+  });
+
+  final bool playbackReady;
+  final VoidCallback onFinished;
+  final VoidCallback? onSkipped;
+  final Duration minDisplay;
+  final Duration maxDisplay;
+
+  @override
+  State<IptvResumeSplash> createState() => _IptvResumeSplashState();
+}
+
+class _IptvResumeSplashState extends State<IptvResumeSplash> {
+  Timer? _minTimer;
+  Timer? _capTimer;
+  var _minElapsed = false;
+  var _finished = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _minTimer = Timer(widget.minDisplay, () {
+      _minElapsed = true;
+      _finishIfReady();
+    });
+    _capTimer = Timer(widget.maxDisplay, _finish);
+  }
+
+  @override
+  void didUpdateWidget(IptvResumeSplash oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.playbackReady && !oldWidget.playbackReady) _finishIfReady();
+  }
+
+  void _finishIfReady() {
+    if (_minElapsed && widget.playbackReady) _finish();
+  }
+
+  void _finish({bool skipped = false}) {
+    if (_finished) return;
+    _finished = true;
+    _minTimer?.cancel();
+    _capTimer?.cancel();
+    if (skipped && widget.onSkipped != null) {
+      widget.onSkipped!();
+    } else {
+      widget.onFinished();
+    }
+  }
+
+  @override
+  void dispose() {
+    _minTimer?.cancel();
+    _capTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (_, event) {
+        _finish(skipped: true);
+        return KeyEventResult.handled;
+      },
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _finish(skipped: true),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFF05060F), Color(0xFF141B33)],
+            ),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Aika Stream',
+                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

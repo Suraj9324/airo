@@ -1,0 +1,575 @@
+import 'package:meta/meta.dart';
+
+import '../provider/ai_provider.dart';
+import 'model_contract.dart';
+import 'model_credibility.dart';
+
+/// Quantization level for GGUF models.
+///
+/// Lower quantization = smaller file size but lower quality.
+/// Higher quantization = larger file size but better quality.
+enum ModelQuantization {
+  /// 2-bit quantization (smallest, lowest quality)
+  q2('Q2', 2, 'Smallest size, lowest quality'),
+
+  /// 3-bit quantization
+  q3('Q3', 3, 'Very small, low quality'),
+
+  /// 4-bit quantization (common for mobile)
+  q4('Q4', 4, 'Small size, good quality balance'),
+
+  /// 5-bit quantization
+  q5('Q5', 5, 'Medium size, good quality'),
+
+  /// 6-bit quantization
+  q6('Q6', 6, 'Larger size, high quality'),
+
+  /// 8-bit quantization
+  q8('Q8', 8, 'Large size, very high quality'),
+
+  /// Full precision (FP16)
+  fp16('FP16', 16, 'Full precision, largest size'),
+
+  /// Google's Gemma mobile scheme: a mixture of 2-bit, 4-bit, and 8-bit
+  /// weights already baked into the published `.litertlm` file.
+  ///
+  /// [bits] stays at 4 so memory estimates match the dominant weight width.
+  /// The display name is what the model library shows.
+  mixed(
+    'Mixed 2/4/8',
+    4,
+    'Google pre-quantized mixture of 2-bit, 4-bit, and 8-bit weights',
+  ),
+
+  /// Unknown quantization
+  unknown('Unknown', 0, 'Unknown quantization level');
+
+  const ModelQuantization(this.displayName, this.bits, this.description);
+
+  final String displayName;
+  final int bits;
+  final String description;
+
+  /// Estimated memory multiplier compared to model parameters.
+  double get memoryMultiplier => bits / 16.0;
+}
+
+/// Model family/architecture type.
+enum ModelFamily {
+  gemma('Gemma', 'Google Gemma open models'),
+  llama('Llama', 'Meta Llama models'),
+  phi('Phi', 'Microsoft Phi small language models'),
+  mistral('Mistral', 'Mistral AI models'),
+  qwen('Qwen', 'Alibaba Qwen models'),
+  stableLM('StableLM', 'Stability AI models'),
+  falcon('Falcon', 'TII Falcon models'),
+  mpt('MPT', 'MosaicML MPT models'),
+  other('Other', 'Other model architectures');
+
+  const ModelFamily(this.displayName, this.description);
+
+  final String displayName;
+  final String description;
+}
+
+/// Input/output modalities supported by a local package.
+enum ModelModality {
+  text('Text'),
+  image('Image'),
+  audio('Audio'),
+  toolCall('Tool call');
+
+  const ModelModality(this.displayName);
+
+  final String displayName;
+}
+
+/// Product capabilities a local package can power.
+enum ModelCapability {
+  chat('Chat'),
+  reasoning('Reasoning'),
+  promptLab('Prompt Lab'),
+  documents('Documents'),
+  imageUnderstanding('Image understanding'),
+  audioUnderstanding('Audio understanding'),
+  agentSkills('Agent skills'),
+  mobileActions('Mobile actions'),
+  benchmark('Benchmark'),
+  // Below: task-shaped capabilities `TaskModelRouter` (`router/ai_task.dart`)
+  // matches an `AiTask` against. Added rather than reused from the values
+  // above because none of them name the task precisely enough to route on:
+  // `documents` describes a product surface, not "this model can summarize."
+  meetingSummarization('Meeting summarization'),
+  translation('Translation'),
+  embeddings('Embeddings'),
+  ocr('OCR');
+
+  const ModelCapability(this.displayName);
+
+  final String displayName;
+}
+
+/// Preferred execution backend for a model package.
+enum ModelBackendPreference {
+  auto('Auto'),
+  cpu('CPU'),
+  gpu('GPU'),
+  npu('NPU'),
+  aiCore('AICore');
+
+  const ModelBackendPreference(this.displayName);
+
+  final String displayName;
+}
+
+/// External license/download gate state.
+enum ModelLicenseState {
+  open('Open'),
+  gated('Login required'),
+  unknown('Unknown');
+
+  const ModelLicenseState(this.displayName);
+
+  final String displayName;
+}
+
+/// Information about an offline LLM model available in the registry.
+///
+/// Contains all metadata needed to display, filter, and load a model.
+/// Follows patterns from the reference implementation.
+@immutable
+class OfflineModelInfo {
+  const OfflineModelInfo({
+    required this.id,
+    required this.name,
+    required this.family,
+    required this.fileSizeBytes,
+    this.filePath,
+    this.downloadUrl,
+    this.quantization = ModelQuantization.q4,
+    this.parameterCount,
+    this.contextLength = 2048,
+    this.supportsVision = false,
+    this.supportsFunctionCalling = false,
+    this.modalities = const [ModelModality.text],
+    this.capabilities = const [ModelCapability.chat],
+    this.backendPreference = ModelBackendPreference.auto,
+    this.licenseState = ModelLicenseState.open,
+    this.languages = const ['en'],
+    this.credibility = ModelCredibility.community,
+    this.provider = AIProvider.gguf,
+    this.description,
+    this.version,
+    this.author,
+    this.license,
+    this.learnMoreUrl,
+    this.huggingFaceId,
+    this.sha256,
+    this.tags = const [],
+    this.minMemoryBytes,
+    this.recommendedMemoryBytes,
+    this.supportsWebRuntime = false,
+    this.webAssetUrl,
+    this.task,
+    this.runtime,
+    this.platformSupport,
+  });
+
+  /// Unique identifier for this model.
+  final String id;
+
+  /// Human-readable model name.
+  final String name;
+
+  /// Model family/architecture.
+  final ModelFamily family;
+
+  /// Model file size in bytes.
+  final int fileSizeBytes;
+
+  /// Local file path (if downloaded).
+  final String? filePath;
+
+  /// URL to download the model.
+  final String? downloadUrl;
+
+  /// Quantization level.
+  final ModelQuantization quantization;
+
+  /// Number of parameters (e.g., 2B, 7B, 13B).
+  final int? parameterCount;
+
+  /// Maximum context length in tokens.
+  final int contextLength;
+
+  /// Whether the model supports vision/image input.
+  final bool supportsVision;
+
+  /// Whether the model supports function calling.
+  final bool supportsFunctionCalling;
+
+  /// Modalities accepted by this package.
+  final List<ModelModality> modalities;
+
+  /// Product capabilities supported by this package.
+  final List<ModelCapability> capabilities;
+
+  /// Preferred runtime backend.
+  final ModelBackendPreference backendPreference;
+
+  /// Whether downloading requires external license/login acknowledgement.
+  final ModelLicenseState licenseState;
+
+  /// Supported languages (ISO 639-1 codes).
+  final List<String> languages;
+
+  /// Credibility level of this model.
+  final ModelCredibility credibility;
+
+  /// AI provider type.
+  final AIProvider provider;
+
+  /// Model description.
+  final String? description;
+
+  /// Model version string.
+  final String? version;
+
+  /// Model author/organization.
+  final String? author;
+
+  /// License type (e.g., 'Apache-2.0', 'MIT', 'Llama 2 Community').
+  final String? license;
+
+  /// Human-readable source or model detail page.
+  final String? learnMoreUrl;
+
+  /// HuggingFace model ID (e.g., 'google/gemma-2b-it-GGUF').
+  final String? huggingFaceId;
+
+  /// SHA256 hash of the model file for verification.
+  final String? sha256;
+
+  /// Tags for filtering and categorization.
+  final List<String> tags;
+
+  /// Minimum memory required to load (bytes).
+  final int? minMemoryBytes;
+
+  /// Recommended memory for optimal performance (bytes).
+  final int? recommendedMemoryBytes;
+
+  /// Whether this package has a confirmed MediaPipe LLM Inference API
+  /// (`.task`) bundle for browser/WASM/WebGPU execution.
+  final bool supportsWebRuntime;
+
+  /// URL to the MediaPipe web `.task` bundle, distinct from [downloadUrl]
+  /// (which points at the native `.litertlm`/GGUF artifact). Null unless
+  /// [supportsWebRuntime] is true.
+  final String? webAssetUrl;
+
+  /// Primary product task for routing (inferred when null).
+  final ModelTask? task;
+
+  /// Execution backend contract (inferred from artifact extension when null).
+  final InferenceRuntime? runtime;
+
+  /// OS eligibility for install/run (inferred from [runtime] when null).
+  final PlatformSupport? platformSupport;
+
+  /// Whether the model is downloaded and available locally.
+  bool get isDownloaded => filePath?.trim().isNotEmpty ?? false;
+
+  /// Whether the model supports audio input.
+  bool get supportsAudio => modalities.contains(ModelModality.audio);
+
+  /// File size in megabytes.
+  double get fileSizeMB => fileSizeBytes / (1024 * 1024);
+
+  /// File size in gigabytes.
+  double get fileSizeGB => fileSizeBytes / (1024 * 1024 * 1024);
+
+  /// Human-readable file size string.
+  String get fileSizeDisplay {
+    if (fileSizeGB >= 1.0) {
+      return '${fileSizeGB.toStringAsFixed(1)} GB';
+    }
+    return '${fileSizeMB.toStringAsFixed(0)} MB';
+  }
+
+  /// Human-readable parameter count (e.g., "2B", "7B").
+  String? get parameterCountDisplay {
+    if (parameterCount == null) return null;
+    if (parameterCount! >= 1000000000) {
+      return '${(parameterCount! / 1000000000).toStringAsFixed(1)}B';
+    }
+    if (parameterCount! >= 1000000) {
+      return '${(parameterCount! / 1000000).toStringAsFixed(0)}M';
+    }
+    return parameterCount.toString();
+  }
+
+  /// Estimated minimum memory based on file size and quantization.
+  int get estimatedMinMemoryBytes {
+    if (minMemoryBytes != null) return minMemoryBytes!;
+    // Rough estimate: model file + 20% overhead for KV cache
+    return (fileSizeBytes * 1.2).round();
+  }
+
+  /// Estimated recommended memory based on file size and quantization.
+  int get estimatedRecommendedMemoryBytes {
+    if (recommendedMemoryBytes != null) return recommendedMemoryBytes!;
+    // Rough estimate: model file + 50% overhead for comfortable operation
+    return (fileSizeBytes * 1.5).round();
+  }
+
+  /// Safe external page for learning more about the model.
+  ///
+  /// Rejects direct artifact URLs and only allows HTTPS pages.
+  Uri? get learnMoreUri {
+    final explicit = _parseLearnMoreUri(learnMoreUrl);
+    if (explicit != null) return explicit;
+
+    final trimmedHuggingFaceId = huggingFaceId?.trim();
+    if (trimmedHuggingFaceId == null || trimmedHuggingFaceId.isEmpty) {
+      return null;
+    }
+
+    return _parseLearnMoreUri('https://huggingface.co/$trimmedHuggingFaceId');
+  }
+
+  /// Creates a copy with modified fields.
+  OfflineModelInfo copyWith({
+    String? id,
+    String? name,
+    ModelFamily? family,
+    int? fileSizeBytes,
+    String? filePath,
+    bool clearFilePath = false,
+    String? downloadUrl,
+    ModelQuantization? quantization,
+    int? parameterCount,
+    int? contextLength,
+    bool? supportsVision,
+    bool? supportsFunctionCalling,
+    List<ModelModality>? modalities,
+    List<ModelCapability>? capabilities,
+    ModelBackendPreference? backendPreference,
+    ModelLicenseState? licenseState,
+    List<String>? languages,
+    ModelCredibility? credibility,
+    AIProvider? provider,
+    String? description,
+    String? version,
+    String? author,
+    String? license,
+    String? learnMoreUrl,
+    String? huggingFaceId,
+    String? sha256,
+    List<String>? tags,
+    int? minMemoryBytes,
+    int? recommendedMemoryBytes,
+    bool? supportsWebRuntime,
+    String? webAssetUrl,
+    ModelTask? task,
+    InferenceRuntime? runtime,
+    PlatformSupport? platformSupport,
+  }) {
+    return OfflineModelInfo(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      family: family ?? this.family,
+      fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
+      filePath: clearFilePath ? null : filePath ?? this.filePath,
+      downloadUrl: downloadUrl ?? this.downloadUrl,
+      quantization: quantization ?? this.quantization,
+      parameterCount: parameterCount ?? this.parameterCount,
+      contextLength: contextLength ?? this.contextLength,
+      supportsVision: supportsVision ?? this.supportsVision,
+      supportsFunctionCalling:
+          supportsFunctionCalling ?? this.supportsFunctionCalling,
+      modalities: modalities ?? this.modalities,
+      capabilities: capabilities ?? this.capabilities,
+      backendPreference: backendPreference ?? this.backendPreference,
+      licenseState: licenseState ?? this.licenseState,
+      languages: languages ?? this.languages,
+      credibility: credibility ?? this.credibility,
+      provider: provider ?? this.provider,
+      description: description ?? this.description,
+      version: version ?? this.version,
+      author: author ?? this.author,
+      license: license ?? this.license,
+      learnMoreUrl: learnMoreUrl ?? this.learnMoreUrl,
+      huggingFaceId: huggingFaceId ?? this.huggingFaceId,
+      sha256: sha256 ?? this.sha256,
+      tags: tags ?? this.tags,
+      minMemoryBytes: minMemoryBytes ?? this.minMemoryBytes,
+      recommendedMemoryBytes:
+          recommendedMemoryBytes ?? this.recommendedMemoryBytes,
+      supportsWebRuntime: supportsWebRuntime ?? this.supportsWebRuntime,
+      webAssetUrl: webAssetUrl ?? this.webAssetUrl,
+      task: task ?? this.task,
+      runtime: runtime ?? this.runtime,
+      platformSupport: platformSupport ?? this.platformSupport,
+    );
+  }
+
+  /// Converts to JSON map for persistence.
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'family': family.name,
+    'fileSizeBytes': fileSizeBytes,
+    'filePath': filePath,
+    'downloadUrl': downloadUrl,
+    'quantization': quantization.name,
+    'parameterCount': parameterCount,
+    'contextLength': contextLength,
+    'supportsVision': supportsVision,
+    'supportsFunctionCalling': supportsFunctionCalling,
+    'modalities': modalities.map((modality) => modality.name).toList(),
+    'capabilities': capabilities.map((capability) => capability.name).toList(),
+    'backendPreference': backendPreference.name,
+    'licenseState': licenseState.name,
+    'languages': languages,
+    'credibility': credibility.name,
+    'provider': provider.name,
+    'description': description,
+    'version': version,
+    'author': author,
+    'license': license,
+    'learnMoreUrl': learnMoreUrl,
+    'huggingFaceId': huggingFaceId,
+    'sha256': sha256,
+    'tags': tags,
+    'minMemoryBytes': minMemoryBytes,
+    'recommendedMemoryBytes': recommendedMemoryBytes,
+    'supportsWebRuntime': supportsWebRuntime,
+    'webAssetUrl': webAssetUrl,
+    'task': task?.name,
+    'runtime': runtime?.name,
+    'platformSupport': platformSupport?.toJson(),
+  };
+
+  /// Creates from JSON map.
+  factory OfflineModelInfo.fromJson(Map<String, dynamic> json) {
+    return OfflineModelInfo(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      family: ModelFamily.values.firstWhere(
+        (f) => f.name == json['family'],
+        orElse: () => ModelFamily.other,
+      ),
+      fileSizeBytes: json['fileSizeBytes'] as int,
+      filePath: json['filePath'] as String?,
+      downloadUrl: json['downloadUrl'] as String?,
+      quantization: ModelQuantization.values.firstWhere(
+        (q) => q.name == json['quantization'],
+        orElse: () => ModelQuantization.unknown,
+      ),
+      parameterCount: json['parameterCount'] as int?,
+      contextLength: json['contextLength'] as int? ?? 2048,
+      supportsVision: json['supportsVision'] as bool? ?? false,
+      supportsFunctionCalling:
+          json['supportsFunctionCalling'] as bool? ?? false,
+      modalities:
+          (json['modalities'] as List?)
+              ?.map(
+                (value) => ModelModality.values.firstWhere(
+                  (modality) => modality.name == value,
+                  orElse: () => ModelModality.text,
+                ),
+              )
+              .toList() ??
+          const [ModelModality.text],
+      capabilities:
+          (json['capabilities'] as List?)
+              ?.map(
+                (value) => ModelCapability.values.firstWhere(
+                  (capability) => capability.name == value,
+                  orElse: () => ModelCapability.chat,
+                ),
+              )
+              .toList() ??
+          const [ModelCapability.chat],
+      backendPreference: ModelBackendPreference.values.firstWhere(
+        (backend) => backend.name == json['backendPreference'],
+        orElse: () => ModelBackendPreference.auto,
+      ),
+      licenseState: ModelLicenseState.values.firstWhere(
+        (state) => state.name == json['licenseState'],
+        orElse: () => ModelLicenseState.open,
+      ),
+      languages: List<String>.from(json['languages'] ?? ['en']),
+      credibility: ModelCredibility.values.firstWhere(
+        (c) => c.name == json['credibility'],
+        orElse: () => ModelCredibility.community,
+      ),
+      provider: AIProvider.values.firstWhere(
+        (p) => p.name == json['provider'],
+        orElse: () => AIProvider.gguf,
+      ),
+      description: json['description'] as String?,
+      version: json['version'] as String?,
+      author: json['author'] as String?,
+      license: json['license'] as String?,
+      learnMoreUrl: json['learnMoreUrl'] as String?,
+      huggingFaceId: json['huggingFaceId'] as String?,
+      sha256: json['sha256'] as String?,
+      tags: List<String>.from(json['tags'] ?? []),
+      minMemoryBytes: json['minMemoryBytes'] as int?,
+      recommendedMemoryBytes: json['recommendedMemoryBytes'] as int?,
+      supportsWebRuntime: json['supportsWebRuntime'] as bool? ?? false,
+      webAssetUrl: json['webAssetUrl'] as String?,
+      task: json['task'] == null
+          ? null
+          : ModelTask.values.firstWhere(
+              (value) => value.name == json['task'],
+              orElse: () => ModelTask.textGeneration,
+            ),
+      runtime: json['runtime'] == null
+          ? null
+          : InferenceRuntime.values.firstWhere(
+              (value) => value.name == json['runtime'],
+              orElse: () => InferenceRuntime.llamaCpp,
+            ),
+      platformSupport: json['platformSupport'] is Map
+          ? PlatformSupport.fromJson(
+              Map<String, dynamic>.from(json['platformSupport'] as Map),
+            )
+          : null,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is OfflineModelInfo && other.id == id;
+  }
+
+  @override
+  int get hashCode => id.hashCode;
+
+  @override
+  String toString() =>
+      'OfflineModelInfo($name, ${quantization.displayName}, '
+      '$fileSizeDisplay)';
+
+  static Uri? _parseLearnMoreUri(String? candidate) {
+    final value = candidate?.trim();
+    if (value == null || value.isEmpty) return null;
+
+    final uri = Uri.tryParse(value);
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+      return null;
+    }
+
+    final path = uri.path.toLowerCase();
+    if (path.contains('/resolve/')) return null;
+
+    const artifactExtensions = ['.litertlm', '.gguf', '.bin', '.task', '.onnx'];
+    if (artifactExtensions.any(path.endsWith)) return null;
+
+    return uri;
+  }
+}

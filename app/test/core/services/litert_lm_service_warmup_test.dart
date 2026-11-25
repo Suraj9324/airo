@@ -1,0 +1,120 @@
+import 'package:core_ai/core_ai.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  group('LiteRtLmService.warmupInstalledModel', () {
+    test(
+      'initializes and performs a private dummy local generation when an installed model exists',
+      () async {
+        final client = _FakeLiteRtLmClient(activeModelExistsValue: true);
+        final service = LiteRtLmService(client: client);
+
+        final warmed = await service.warmupInstalledModel();
+
+        expect(warmed, isTrue);
+        expect(client.initializeCalls, 1);
+        expect(
+          client.installCalls,
+          0,
+          reason: 'warmup must not download/install models',
+        );
+        expect(client.generatedPrompts, [' ']);
+      },
+    );
+
+    test(
+      'returns false without installing when no local model exists',
+      () async {
+        final client = _FakeLiteRtLmClient(activeModelExistsValue: false);
+        final service = LiteRtLmService(
+          client: client,
+          config: const LiteRtLmConfig(
+            modelUrl: 'https://example.invalid/model.task',
+          ),
+        );
+
+        final warmed = await service.warmupInstalledModel();
+
+        expect(warmed, isFalse);
+        expect(client.initializeCalls, 0);
+        expect(
+          client.installCalls,
+          0,
+          reason: 'warmup must not trigger network model installation',
+        );
+        expect(client.generatedPrompts, isEmpty);
+      },
+    );
+  });
+}
+
+class _FakeLiteRtLmClient extends LiteRtLmClient {
+  _FakeLiteRtLmClient({required this.activeModelExistsValue});
+
+  final bool activeModelExistsValue;
+  int initializeCalls = 0;
+  int installCalls = 0;
+  final generatedPrompts = <String>[];
+  final initializeModelPaths = <String?>[];
+
+  @override
+  Future<bool> activeModelExists({String? modelPath}) async =>
+      activeModelExistsValue;
+
+  @override
+  Future<void> initialize({
+    String? huggingFaceToken,
+    String? modelPath,
+    LiteRtLmBackend? backend,
+    int? maxTokens,
+    bool vision = false,
+  }) async {
+    initializeCalls += 1;
+    initializeModelPaths.add(modelPath);
+  }
+
+  @override
+  Future<String?> installModel({
+    required String url,
+    required LiteRtLmModelKind modelKind,
+    String? huggingFaceToken,
+  }) async {
+    installCalls += 1;
+    return '/app/files/litert_lm_models/${Uri.parse(url).pathSegments.last}';
+  }
+
+  @override
+  Future<String> generate({
+    required String prompt,
+    required LiteRtLmBackend backend,
+    required int maxTokens,
+    String? systemPrompt,
+    String? imagePath,
+    bool reuseConversation = true,
+  }) async {
+    generatedPrompts.add(prompt);
+    return '';
+  }
+
+  @override
+  Stream<String> generateStream({
+    required String prompt,
+    required LiteRtLmBackend backend,
+    required int maxTokens,
+    String? systemPrompt,
+    String? imagePath,
+    bool reuseConversation = true,
+  }) async* {
+    yield await generate(
+      prompt: prompt,
+      backend: backend,
+      maxTokens: maxTokens,
+      systemPrompt: systemPrompt,
+      imagePath: imagePath,
+      reuseConversation: reuseConversation,
+    );
+  }
+
+  @override
+  Future<LiteRtLmModelFacts?> describeModel({String? modelPath}) async => null;
+}

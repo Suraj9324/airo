@@ -1,0 +1,66 @@
+// Cargokit cross-compiles the Airo Mind engines for each Android ABI using the NDK
+// as part of the ordinary Gradle build.
+group = "com.developerscoffee.airo.mind"
+version = "0.1.0"
+
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath("com.android.tools.build:gradle:8.7.3") }
+}
+
+rootProject.allprojects {
+    repositories { google(); mavenCentral() }
+}
+
+apply plugin: "com.android.library"
+apply from: "../cargokit/gradle/plugin.gradle"
+
+cargokit {
+    // Two libraries, not one. whisper.cpp and llama.cpp each statically vendor
+    // their own ggml with the same symbol names, so a single library holding
+    // both fails to link on Android with 20+ duplicate symbols (#1546).
+    //
+    // Paths are relative to this file. The engines are in the cargo workspace
+    // at <repo>/rust, not inside the package.
+    //
+    // arm64 only, and this is what makes a debug build possible at all.
+    // Cargokit adds x86 and x86_64 for debug builds (emulator ABIs), and
+    // neither engine can be built for 32-bit x86 here:
+    //
+    //   * whisper-rs-sys cannot generate bindings without a sysroot, falls back
+    //     to bindings pinned for 64-bit, and those fail const-eval on i686
+    //     ("attempt to compute 12_usize - 16_usize, which would overflow").
+    //     Supplying a sysroot fixes that, and then CMake fails separately with
+    //     "unsupported option '-arch' for target 'i686-linux-android24'" -- an
+    //     Apple flag reaching an Android cross-compile from a macOS host.
+    //   * llama-cpp-sys-2's build script panics outright on
+    //     armv7-linux-androideabi.
+    //
+    // x86 Android is emulator-only and no device in this project's test rig
+    // uses it, so the engines are not built for it. On an ABI without them the
+    // app degrades to MindUnavailable, which is a state the UI already
+    // explains -- rather than a build that cannot be produced.
+    def engineAbis = ["android-arm64"]
+    library("../../../rust/airo_mind_whisper", "airo_mind_whisper", engineAbis)
+    library("../../../rust/airo_mind_llama", "airo_mind_llama", engineAbis)
+}
+
+android {
+    namespace = "com.developerscoffee.airo.mind"
+    // Must track gradle/libs.versions.toml airo-compile-sdk (#1575). The app
+    // module's compileSdk does not override library modules — AGP validates
+    // AAR metadata per module. flutter_local_notifications requires 36+.
+    compileSdk = 37
+    ndkVersion = "27.0.12077973"
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        // whisper.cpp and llama.cpp both need 64-bit atomics and a NEON path
+        // that older ABIs do not carry.
+        minSdk = 24
+    }
+}

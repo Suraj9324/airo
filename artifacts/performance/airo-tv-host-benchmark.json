@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "1.0.0",
+  "deviceClass": "host_local",
+  "capturedAt": "2026-07-15T10:37:16.628855Z",
+  "iterations": 5,
+  "channelCount": 12038,
+  "fixture": {
+    "fixtureId": "iptv-org-index-sanitized-2026-07-15",
+    "sourceKind": "file_m3u",
+    "byteCount": 2848163,
+    "sha256": "02525c806380aa700026838b66803d57cc9c3060ec1aefbb69e5cad3a321a0e3"
+  },
+  "host": {
+    "operatingSystem": "macos",
+    "operatingSystemVersion": "Version 26.5.1 (Build 25F80)",
+    "dartVersion": "3.12.2 (stable) (Tue Jun 9 01:11:39 2026 -0700) on \"macos_arm64\""
+  },
+  "plan": {
+    "schemaVersion": "1.0.0",
+    "planId": "airo-tv-host-iptv-org-index-sanitized-2026-07-15",
+    "dataset": {
+      "schemaVersion": "1.0.0",
+      "profileId": "iptv-org-index-sanitized-2026-07-15",
+      "kind": "live_iptv",
+      "liveChannelCount": 12038,
+      "vodItemCount": 0,
+      "epgProgramCount": 0,
+      "playlistSourceCount": 1,
+      "metadataFieldCount": 6
+    },
+    "steps": [
+      {
+        "schemaVersion": "1.0.0",
+        "stepId": "parse-m3u",
+        "operation": "import_batch",
+        "recordCount": 12038,
+        "queryCount": 0,
+        "concurrency": 1
+      },
+      {
+        "schemaVersion": "1.0.0",
+        "stepId": "search-index",
+        "operation": "search_text",
+        "recordCount": 12038,
+        "queryCount": 5,
+        "concurrency": 1
+      }
+    ],
+    "requiredMetrics": [
+      "elapsed_millis",
+      "rows_per_second"
+    ],
+    "budget": {
+      "schemaVersion": "1.0.0",
+      "maxElapsedMillis": 30000,
+      "maxPeakMemoryMb": 512,
+      "maxStorageMb": 64,
+      "minRowsPerSecond": 50.0
+    }
+  },
+  "run": {
+    "schemaVersion": "1.0.0",
+    "planId": "airo-tv-host-iptv-org-index-sanitized-2026-07-15",
+    "runnerId": "airo-tv-host-smoke",
+    "totalElapsedMillis": 91,
+    "peakMemoryMb": 0,
+    "minRowsPerSecond": 144165.93813247746,
+    "failedStepIds": [],
+    "samples": [
+      {
+        "schemaVersion": "1.0.0",
+        "stepId": "parse-m3u",
+        "operation": "import_batch",
+        "completedRecordCount": 12038,
+        "elapsedMillis": 83,
+        "rowsPerSecond": 144165.93813247746
+      },
+      {
+        "schemaVersion": "1.0.0",
+        "stepId": "search-index",
+        "operation": "search_text",
+        "completedRecordCount": 60190,
+        "elapsedMillis": 8,
+        "rowsPerSecond": 6970469.021424435
+      }
+    ]
+  },
+  "evaluation": {
+    "planId": "airo-tv-host-iptv-org-index-sanitized-2026-07-15",
+    "runnerId": "airo-tv-host-smoke",
+    "accepted": true,
+    "blockers": [
+      "accepted"
+    ]
+  }
+}

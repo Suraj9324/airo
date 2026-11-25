@@ -1,0 +1,445 @@
+import 'dart:async';
+import 'dart:developer' as developer;
+
+import 'package:core_domain/core_domain.dart';
+
+import '../device/memory_budget_manager.dart';
+import '../device/memory_severity.dart';
+import 'gguf_model_config.dart';
+
+/// Callback for model loading progress updates.
+typedef ModelLoadProgressCallback =
+    void Function(double progress, String status);
+
+/// Callback for memory warning events.
+typedef ModelMemoryWarningCallback = void Function(MemoryCheckResult result);
+
+/// State of the active model.
+enum ActiveModelState {
+  /// No model is loaded.
+  unloaded,
+
+  /// Model is currently loading.
+  loading,
+
+  /// Model is loaded and ready for inference.
+  ready,
+
+  /// Model loading or inference failed.
+  error,
+
+  /// Model is being unloaded.
+  unloading,
+}
+
+enum ActiveRuntimeKind { gguf, liteRtLm }
+
+class ActiveRuntimeInfo {
+  const ActiveRuntimeInfo({
+    required this.runtimeKind,
+    required this.runtimeId,
+    required this.modelId,
+    required this.modelPath,
+    required this.displayName,
+    required this.state,
+    this.memoryUsageBytes,
+  });
+
+  final ActiveRuntimeKind runtimeKind;
+  final String runtimeId;
+  final String modelId;
+  final String modelPath;
+  final String displayName;
+  final ActiveModelState state;
+  final int? memoryUsageBytes;
+
+  bool get isReady => state == ActiveModelState.ready;
+
+  ActiveRuntimeInfo copyWith({
+    ActiveRuntimeKind? runtimeKind,
+    String? runtimeId,
+    String? modelId,
+    String? modelPath,
+    String? displayName,
+    ActiveModelState? state,
+    int? memoryUsageBytes,
+  }) => ActiveRuntimeInfo(
+    runtimeKind: runtimeKind ?? this.runtimeKind,
+    runtimeId: runtimeId ?? this.runtimeId,
+    modelId: modelId ?? this.modelId,
+    modelPath: modelPath ?? this.modelPath,
+    displayName: displayName ?? this.displayName,
+    state: state ?? this.state,
+    memoryUsageBytes: memoryUsageBytes ?? this.memoryUsageBytes,
+  );
+}
+
+/// Information about the currently active model.
+class ActiveModelInfo {
+  const ActiveModelInfo({
+    required this.config,
+    required this.state,
+    this.loadedAt,
+    this.memoryUsageBytes,
+    this.tokensPerSecond,
+    this.errorMessage,
+  });
+
+  /// Configuration of the active model.
+  final GGUFModelConfig config;
+
+  /// Current state of the model.
+  final ActiveModelState state;
+
+  /// When the model was loaded.
+  final DateTime? loadedAt;
+
+  /// Current memory usage in bytes.
+  final int? memoryUsageBytes;
+
+  /// Inference speed in tokens per second.
+  final double? tokensPerSecond;
+
+  /// Error message if state is error.
+  final String? errorMessage;
+
+  /// Whether the model is ready for inference.
+  bool get isReady => state == ActiveModelState.ready;
+
+  /// Whether the model is currently loading.
+  bool get isLoading => state == ActiveModelState.loading;
+
+  ActiveModelInfo copyWith({
+    GGUFModelConfig? config,
+    ActiveModelState? state,
+    DateTime? loadedAt,
+    int? memoryUsageBytes,
+    double? tokensPerSecond,
+    String? errorMessage,
+  }) => ActiveModelInfo(
+    config: config ?? this.config,
+    state: state ?? this.state,
+    loadedAt: loadedAt ?? this.loadedAt,
+    memoryUsageBytes: memoryUsageBytes ?? this.memoryUsageBytes,
+    tokensPerSecond: tokensPerSecond ?? this.tokensPerSecond,
+    errorMessage: errorMessage ?? this.errorMessage,
+  );
+}
+
+/// Singleton service for managing the active LLM model lifecycle.
+///
+/// Ensures only one model is loaded at a time to prevent memory issues.
+/// Implements the singleton pattern from the reference implementation.
+class ActiveModelService {
+  ActiveModelService._internal({
+    MemoryBudgetManager? memoryBudgetManager,
+    bool simulateLoad = false,
+  }) : _memoryBudgetManager = memoryBudgetManager ?? MemoryBudgetManager(),
+       _simulateLoad = simulateLoad;
+
+  static ActiveModelService? _instance;
+
+  /// Gets the singleton instance of ActiveModelService.
+  static ActiveModelService get instance {
+    _instance ??= ActiveModelService._internal();
+    return _instance!;
+  }
+
+  /// Creates a new instance for testing purposes.
+  /// In production, use [instance] instead.
+  factory ActiveModelService.forTesting({
+    MemoryBudgetManager? memoryBudgetManager,
+    bool simulateLoad = true,
+  }) {
+    return ActiveModelService._internal(
+      memoryBudgetManager: memoryBudgetManager,
+      simulateLoad: simulateLoad,
+    );
+  }
+
+  /// Resets the singleton instance (for testing only).
+  static void resetInstance() {
+    _instance = null;
+  }
+
+  final MemoryBudgetManager _memoryBudgetManager;
+  // Production must never claim a GGUF model is executable without a native
+  // loader. Tests can opt into the deterministic lifecycle simulation.
+  final bool _simulateLoad;
+
+  ActiveModelInfo? _activeModel;
+  ActiveRuntimeInfo? _activeRuntime;
+  Future<void> Function()? _activeRuntimeDispose;
+  final _stateController = StreamController<ActiveModelInfo?>.broadcast();
+  final _runtimeStateController =
+      StreamController<ActiveRuntimeInfo?>.broadcast();
+
+  /// Stream of active model state changes.
+  Stream<ActiveModelInfo?> get stateStream => _stateController.stream;
+
+  /// Gets the currently active model info, or null if no model is loaded.
+  ActiveModelInfo? get activeModel => _activeModel;
+
+  /// Stream of generic runtime lifecycle changes.
+  Stream<ActiveRuntimeInfo?> get runtimeStateStream =>
+      _runtimeStateController.stream;
+
+  /// Gets the currently active runtime, including non-GGUF runtimes.
+  ActiveRuntimeInfo? get activeRuntime => _activeRuntime;
+
+  /// Whether a model is currently loaded and ready.
+  bool get hasActiveModel =>
+      _activeModel != null && _activeModel!.state == ActiveModelState.ready;
+
+  bool get hasActiveRuntime =>
+      _activeRuntime != null && _activeRuntime!.state == ActiveModelState.ready;
+
+  /// Whether a model is currently loading.
+  bool get isLoading =>
+      _activeModel != null && _activeModel!.state == ActiveModelState.loading;
+
+  /// Loads a model with the given configuration.
+  ///
+  /// If another model is already loaded, it will be unloaded first.
+  /// Returns a [Result] indicating success or failure.
+  Future<Result<ActiveModelInfo>> loadModel(
+    GGUFModelConfig config, {
+    ModelLoadProgressCallback? onProgress,
+    ModelMemoryWarningCallback? onMemoryWarning,
+  }) async {
+    if (!_simulateLoad) {
+      const message =
+          'Local GGUF inference is unavailable because the native llama.cpp '
+          'backend is not installed. Configure a supported remote server or '
+          'install the native backend before loading this model.';
+      developer.log(message, name: 'ActiveModelService', level: 900);
+      return Err(StateError(message), StackTrace.current);
+    }
+
+    developer.log(
+      'Loading model: ${config.modelName}',
+      name: 'ActiveModelService',
+    );
+
+    // Unload existing model if any
+    if (_activeModel != null &&
+        _activeModel!.state != ActiveModelState.unloaded) {
+      await unloadModel();
+    }
+
+    // Check memory budget before loading
+    final memoryCheck = await _memoryBudgetManager.checkModelFile(
+      fileSizeBytes: config.estimatedMemoryBytes,
+      type: ModelType.text,
+    );
+
+    if (memoryCheck.severity == MemorySeverity.blocked) {
+      final error =
+          'Insufficient memory to load model: ${memoryCheck.severity.description}. '
+          'Estimated usage: ${memoryCheck.estimatedUsageMB.toStringAsFixed(0)}MB, '
+          'Budget: ${memoryCheck.budgetMB.toStringAsFixed(0)}MB';
+      developer.log(error, name: 'ActiveModelService', level: 1000);
+      return Err(StateError(error), StackTrace.current);
+    }
+
+    if (memoryCheck.severity.shouldWarn) {
+      onMemoryWarning?.call(memoryCheck);
+    }
+
+    _activeRuntime = ActiveRuntimeInfo(
+      runtimeKind: ActiveRuntimeKind.gguf,
+      runtimeId: 'gguf',
+      modelId: config.modelPath,
+      modelPath: config.modelPath,
+      displayName: config.modelName,
+      state: ActiveModelState.loading,
+      memoryUsageBytes: config.estimatedMemoryBytes,
+    );
+    _runtimeStateController.add(_activeRuntime);
+
+    // Update state to loading
+    _activeModel = ActiveModelInfo(
+      config: config,
+      state: ActiveModelState.loading,
+    );
+    _stateController.add(_activeModel);
+    onProgress?.call(0.0, 'Initializing model...');
+
+    try {
+      // Simulate model loading (actual implementation will use FFI)
+      // TODO: Replace with actual llama.cpp FFI loading. Tracked as its own
+      // FFI-integration effort (too large for the core_ai LLM-stack
+      // unification refactor): see
+      // https://github.com/DevelopersCoffee/airo/issues/1696
+      onProgress?.call(0.3, 'Loading model weights...');
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      onProgress?.call(0.6, 'Initializing context...');
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      onProgress?.call(0.9, 'Warming up...');
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      // Update state to ready
+      _activeModel = ActiveModelInfo(
+        config: config,
+        state: ActiveModelState.ready,
+        loadedAt: DateTime.now(),
+        memoryUsageBytes: config.estimatedMemoryBytes,
+      );
+      _activeRuntime = _activeRuntime?.copyWith(state: ActiveModelState.ready);
+      _runtimeStateController.add(_activeRuntime);
+      _stateController.add(_activeModel);
+      onProgress?.call(1.0, 'Model ready');
+
+      developer.log(
+        'Model loaded successfully: ${config.modelName}',
+        name: 'ActiveModelService',
+      );
+
+      return Ok(_activeModel!);
+    } catch (e, stack) {
+      developer.log(
+        'Failed to load model: $e',
+        name: 'ActiveModelService',
+        level: 1000,
+        error: e,
+        stackTrace: stack,
+      );
+
+      _activeModel = ActiveModelInfo(
+        config: config,
+        state: ActiveModelState.error,
+        errorMessage: e.toString(),
+      );
+      _activeRuntime = _activeRuntime?.copyWith(
+        state: ActiveModelState.error,
+        memoryUsageBytes: config.estimatedMemoryBytes,
+      );
+      _runtimeStateController.add(_activeRuntime);
+      _stateController.add(_activeModel);
+
+      return Err(e, stack);
+    }
+  }
+
+  /// Unloads the currently active model.
+  Future<void> unloadModel() async {
+    if (_activeModel == null && _activeRuntime == null) return;
+
+    developer.log('Unloading active runtime', name: 'ActiveModelService');
+
+    if (_activeModel != null) {
+      _activeModel = _activeModel!.copyWith(state: ActiveModelState.unloading);
+      _stateController.add(_activeModel);
+    }
+    if (_activeRuntime != null) {
+      _activeRuntime = _activeRuntime!.copyWith(
+        state: ActiveModelState.unloading,
+      );
+      _runtimeStateController.add(_activeRuntime);
+    }
+
+    try {
+      if (_activeRuntimeDispose != null) {
+        await _activeRuntimeDispose!.call();
+      }
+      // TODO: Replace with actual llama.cpp FFI cleanup. See
+      // https://github.com/DevelopersCoffee/airo/issues/1696
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      _activeModel = null;
+      _stateController.add(null);
+      _activeRuntime = null;
+      _activeRuntimeDispose = null;
+      _runtimeStateController.add(null);
+
+      developer.log('Model unloaded', name: 'ActiveModelService');
+    } catch (e, stack) {
+      developer.log(
+        'Error unloading model: $e',
+        name: 'ActiveModelService',
+        level: 900,
+        error: e,
+        stackTrace: stack,
+      );
+      // Force unload even on error
+      _activeModel = null;
+      _stateController.add(null);
+      _activeRuntime = null;
+      _activeRuntimeDispose = null;
+      _runtimeStateController.add(null);
+    }
+  }
+
+  Future<void> activateRuntime({
+    required ActiveRuntimeKind runtimeKind,
+    required String runtimeId,
+    required String modelId,
+    required String modelPath,
+    required String displayName,
+    required int estimatedMemoryBytes,
+    Future<void> Function()? onDeactivate,
+  }) async {
+    final shouldReuseCurrent =
+        _activeRuntime != null &&
+        _activeRuntime!.runtimeKind == runtimeKind &&
+        _activeRuntime!.modelId == modelId &&
+        _activeRuntime!.state == ActiveModelState.ready;
+    if (shouldReuseCurrent) {
+      return;
+    }
+
+    if (_activeModel != null || _activeRuntime != null) {
+      await unloadModel();
+    }
+
+    _activeRuntime = ActiveRuntimeInfo(
+      runtimeKind: runtimeKind,
+      runtimeId: runtimeId,
+      modelId: modelId,
+      modelPath: modelPath,
+      displayName: displayName,
+      state: ActiveModelState.ready,
+      memoryUsageBytes: estimatedMemoryBytes,
+    );
+    _activeRuntimeDispose = onDeactivate;
+    _runtimeStateController.add(_activeRuntime);
+  }
+
+  /// Switches to a different model.
+  ///
+  /// Convenience method that unloads the current model and loads the new one.
+  Future<Result<ActiveModelInfo>> switchModel(
+    GGUFModelConfig config, {
+    ModelLoadProgressCallback? onProgress,
+    ModelMemoryWarningCallback? onMemoryWarning,
+  }) async {
+    await unloadModel();
+    return loadModel(
+      config,
+      onProgress: onProgress,
+      onMemoryWarning: onMemoryWarning,
+    );
+  }
+
+  /// Updates performance metrics for the active model.
+  void updateMetrics({double? tokensPerSecond, int? memoryUsageBytes}) {
+    if (_activeModel == null || _activeModel!.state != ActiveModelState.ready) {
+      return;
+    }
+
+    _activeModel = _activeModel!.copyWith(
+      tokensPerSecond: tokensPerSecond ?? _activeModel!.tokensPerSecond,
+      memoryUsageBytes: memoryUsageBytes ?? _activeModel!.memoryUsageBytes,
+    );
+    _stateController.add(_activeModel);
+  }
+
+  /// Disposes of resources.
+  Future<void> dispose() async {
+    await unloadModel();
+    await _stateController.close();
+    await _runtimeStateController.close();
+  }
+}

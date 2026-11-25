@@ -1,0 +1,18 @@
+name: core_orchestration_storage
+owner: Edge Architect
+reviewers:
+  - Chief Architect
+  - Chief Cloud Officer
+  - Chief Performance Officer
+allowed_dependencies:
+  - core_native
+  - core_commands
+  - core_device_identity
+  - core_presence
+  - core_sessions
+  - core_watch_progress
+forbidden_dependencies:
+  - app
+quality_gates: {}
+
+status: pre-wired  # unwired orchestration island (#1675) — built for Play Anywhere (milestone 10), no app flavor reaches it yet. Excluded from the #1681 reachability gate; do not delete without a Play Anywhere activation decision.

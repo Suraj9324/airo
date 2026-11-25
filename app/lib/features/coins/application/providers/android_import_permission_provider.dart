@@ -1,0 +1,51 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
+
+import '../services/android_finance_import_preferences.dart';
+import '../services/android_finance_import_service.dart';
+
+final androidFinanceImportPreferencesProvider =
+    Provider<AndroidFinanceImportPreferences>(
+      (ref) => const AndroidFinanceImportPreferences(),
+    );
+
+final androidFinanceImportPermissionControllerProvider =
+    StateNotifierProvider<
+      AndroidFinanceImportPermissionController,
+      AsyncValue<AndroidFinanceImportPermission>
+    >((ref) {
+      final preferences = ref.watch(androidFinanceImportPreferencesProvider);
+      return AndroidFinanceImportPermissionController(preferences);
+    });
+
+class AndroidFinanceImportPermissionController
+    extends StateNotifier<AsyncValue<AndroidFinanceImportPermission>> {
+  AndroidFinanceImportPermissionController(this._preferences)
+    : super(const AsyncValue.loading()) {
+    _load();
+  }
+
+  final AndroidFinanceImportPreferences _preferences;
+
+  Future<void> _load() async {
+    try {
+      state = AsyncValue.data(await _preferences.readPermission());
+    } catch (_) {
+      state = const AsyncValue.data(AndroidFinanceImportPermission.disabled);
+    }
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    state = const AsyncValue.loading();
+    try {
+      await _preferences.setEnabled(enabled);
+      state = AsyncValue.data(
+        enabled
+            ? AndroidFinanceImportPermission.enabled
+            : AndroidFinanceImportPermission.disabled,
+      );
+    } catch (_) {
+      state = const AsyncValue.data(AndroidFinanceImportPermission.disabled);
+    }
+  }
+}

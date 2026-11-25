@@ -1,0 +1,208 @@
+// ignore_for_file: prefer_initializing_formals
+
+import 'dart:math';
+
+import 'package:core_data/core_data.dart';
+import 'package:core_domain/core_domain.dart';
+import 'package:local_auth/local_auth.dart';
+
+const String _wrappedDekKey = 'airo_coin_wrapped_dek';
+
+/// Biometric-gated encryption key manager for the Airo Coin vault.
+///
+/// The DEK (data-encryption key) is generated once and persisted via
+/// [SecureStorage] (from `core_data`) — which is itself Keystore/Keychain-
+/// backed, acting as the KEK boundary. No caller ever gets the key without a
+/// successful biometric (or OS-fallback) authentication first.
+class VaultKeyManager implements EncryptionKeyManager {
+  VaultKeyManager({
+    required LocalAuthentication localAuth,
+    required SecureStorage secureStorage,
+  }) : _authenticate = (() => localAuth.authenticate(
+         localizedReason: 'Unlock your Airo Coin vault',
+         options: const AuthenticationOptions(biometricOnly: false),
+       )),
+       _localAuth = localAuth,
+       _secureStorage = secureStorage,
+       _isAvailable = null,
+       _hasEnrolled = null;
+
+  /// Test-only constructor: bypasses the real `local_auth` plugin and
+  /// `flutter_secure_storage` platform channel, both of which are
+  /// unavailable in plain `flutter test`.
+  VaultKeyManager.forTesting({
+    required SecureStorage secureStorage,
+    required Future<bool> Function() authenticate,
+    Future<bool> Function()? isAvailable,
+    Future<bool> Function()? hasEnrolled,
+  }) : _secureStorage = secureStorage,
+       _authenticate = authenticate,
+       _localAuth = null,
+       _isAvailable = isAvailable,
+       _hasEnrolled = hasEnrolled;
+
+  final SecureStorage _secureStorage;
+  final Future<bool> Function() _authenticate;
+  final LocalAuthentication? _localAuth;
+
+  /// Test-only seam for [isEncryptionAvailable]. `null` (the default under
+  /// the production constructor and under [forTesting] when not supplied)
+  /// means "no fake configured" — [forTesting] callers get `true` to keep
+  /// existing tests passing unchanged, while the production constructor
+  /// always exercises the real `local_auth` checks below.
+  final Future<bool> Function()? _isAvailable;
+
+  /// Test-only seam for [hasEnrolledBiometrics]; see [_isAvailable].
+  final Future<bool> Function()? _hasEnrolled;
+
+  @override
+  Future<Result<List<int>>> getDatabaseKey() async {
+    final bool authenticated;
+    try {
+      authenticated = await _authenticate();
+    } catch (e) {
+      return Failure(
+        AuthFailure(message: 'Biometric authentication failed', cause: e),
+      );
+    }
+    if (!authenticated) {
+      return const Failure(
+        AuthFailure(message: 'Biometric authentication failed'),
+      );
+    }
+
+    final existing = await _secureStorage.read(_wrappedDekKey);
+    if (existing case Success(value: final stored?)) {
+      try {
+        return Success(_decodeKey(stored));
+      } catch (e) {
+        return Failure(
+          CacheFailure(message: 'Stored vault key is corrupted', cause: e),
+        );
+      }
+    }
+
+    final newKey = _generateKeyBytes();
+    final writeResult = await _secureStorage.write(
+      _wrappedDekKey,
+      _encodeKey(newKey),
+    );
+    if (writeResult.isFailure) {
+      return Failure(writeResult.failure);
+    }
+    return Success(newKey);
+  }
+
+  /// Rotates the stored DEK to a newly generated 32-byte key.
+  ///
+  /// **DESTRUCTIVE — DO NOT CALL IN PRODUCTION.** This overwrites the stored
+  /// DEK without re-encrypting any existing vault data; every record
+  /// previously encrypted under the old DEK becomes permanently
+  /// undecryptable the moment this returns success. For a safe rotation that
+  /// re-encrypts existing data first, use
+  /// `VaultKeyRotationService.rotateKeyWithReencryption()` instead — this raw
+  /// primitive exists only to satisfy `EncryptionKeyManager`'s interface
+  /// contract.
+  @override
+  Future<Result<void>> rotateKey() async {
+    final bool authenticated;
+    try {
+      authenticated = await _authenticate();
+    } catch (e) {
+      return Failure(
+        AuthFailure(message: 'Biometric authentication failed', cause: e),
+      );
+    }
+    if (!authenticated) {
+      return const Failure(
+        AuthFailure(message: 'Biometric authentication failed'),
+      );
+    }
+
+    final newKey = _generateKeyBytes();
+    return _secureStorage.write(_wrappedDekKey, _encodeKey(newKey));
+  }
+
+  /// Generates a new candidate DEK without persisting it. Pair with
+  /// [persistRotatedKeyUnauthenticated] via
+  /// `VaultKeyRotationService.rotateKeyWithReencryption()` — never persist a
+  /// candidate key before all vault data has been re-encrypted under it.
+  List<int> generateCandidateKey() => _generateKeyBytes();
+
+  /// Persists [newKeyBytes] as the active DEK. Only call this after all
+  /// vault data has been re-encrypted under [newKeyBytes] — see
+  /// `VaultKeyRotationService.rotateKeyWithReencryption()`.
+  Future<Result<void>> commitRotatedKey(List<int> newKeyBytes) async {
+    final bool authenticated;
+    try {
+      authenticated = await _authenticate();
+    } catch (e) {
+      return Failure(
+        AuthFailure(message: 'Biometric authentication failed', cause: e),
+      );
+    }
+    if (!authenticated) {
+      return const Failure(
+        AuthFailure(message: 'Biometric authentication failed'),
+      );
+    }
+    return _secureStorage.write(_wrappedDekKey, _encodeKey(newKeyBytes));
+  }
+
+  /// Persists [newKeyBytes] as the active DEK WITHOUT re-authenticating.
+  ///
+  /// **Internal/trusted-caller primitive — do not call this directly.** It
+  /// intentionally skips biometric re-authentication because it must only be
+  /// called by `VaultKeyRotationService.rotateKeyWithReencryption()`
+  /// immediately after a single upstream [getDatabaseKey] auth has already
+  /// gated the whole rotation operation. Calling this independently of that
+  /// flow would persist a new DEK with no authentication check at all.
+  Future<Result<void>> persistRotatedKeyUnauthenticated(
+    List<int> newKeyBytes,
+  ) => _secureStorage.write(_wrappedDekKey, _encodeKey(newKeyBytes));
+
+  @override
+  Future<bool> isEncryptionAvailable() async {
+    if (_localAuth == null) return _isAvailable?.call() ?? true;
+    final canCheck = await _localAuth.canCheckBiometrics;
+    final deviceSupported = await _localAuth.isDeviceSupported();
+    return canCheck && deviceSupported;
+  }
+
+  /// Whether the user has actually enrolled a biometric.
+  ///
+  /// [isEncryptionAvailable] only reports hardware capability: on a device
+  /// with a fingerprint sensor but no enrolled print (and no screen lock,
+  /// which Android requires before enrolment), it still returns true. The
+  /// authentication attempt then fails, and without this signal the vault
+  /// reports a generic "authentication failed" — implying a bad scan —
+  /// when the real problem is that there is nothing to scan against.
+  ///
+  /// Used to classify failures, never to gate the attempt: `authenticate`
+  /// runs with `biometricOnly: false`, so a device credential is a valid
+  /// factor even when this returns false.
+  Future<bool> hasEnrolledBiometrics() async {
+    final localAuth = _localAuth;
+    if (localAuth == null) return _hasEnrolled?.call() ?? true;
+    try {
+      final enrolled = await localAuth.getAvailableBiometrics();
+      return enrolled.isNotEmpty;
+    } catch (_) {
+      // Never let a diagnostic probe change the outcome of an unlock.
+      return true;
+    }
+  }
+
+  @override
+  Future<Result<void>> clearKeys() => _secureStorage.delete(_wrappedDekKey);
+
+  List<int> _generateKeyBytes() {
+    final random = Random.secure();
+    return List<int>.generate(32, (_) => random.nextInt(256));
+  }
+
+  String _encodeKey(List<int> bytes) => bytes.join(',');
+
+  List<int> _decodeKey(String encoded) =>
+      encoded.split(',').map(int.parse).toList();
+}

@@ -1,0 +1,222 @@
+name: Rust Core CI
+
+on:
+  push:
+    paths:
+      - 'rust/**'
+      - 'packages/core_native/**'
+      - '.github/workflows/rust-core.yml'
+  pull_request:
+    paths:
+      - 'rust/**'
+      - 'packages/core_native/**'
+      - '.github/workflows/rust-core.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Host tests (fast, runs on every push) ─────────────────────────────────
+  test-host:
+    name: Rust test + clippy (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # `--workspace` is required on a virtual manifest. `--exclude airo_mind_cli`
+      # is required because that bin statically links whisper.cpp and llama.cpp
+      # in one image; each vendors ggml under the same symbol names, and Linux
+      # lld refuses the duplicate (see rust/airo_mind_cli/README.md). macOS ld
+      # is lenient, which is why the local dev loop still builds on this Mac.
+      # Engines stay independently testable via their own packages.
+      - run: cargo test --manifest-path rust/Cargo.toml --workspace --exclude airo_mind_cli
+      - run: cargo clippy --manifest-path rust/Cargo.toml --workspace --exclude airo_mind_cli -- -D warnings
+      # `--all`/`--workspace` is required now that the workspace has more than
+      # one member. Without it, cargo fmt looks for a package in the working
+      # directory, finds a virtual manifest, and exits with "Failed to find
+      # targets" -- which reads like a broken checkout rather than a missing
+      # flag. fmt does not link, so the CLI stays included.
+      - run: cargo fmt --manifest-path rust/Cargo.toml --all --check
+
+      # ECAPA ONNX tests — optional feature, requires preinstalled ORT (no download-binaries).
+      - name: ECAPA ort tests (airo_mind_diarize)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential g++ libstdc++-13-dev
+          chmod +x scripts/install-onnxruntime.sh scripts/run-ecapa-ort-tests.sh scripts/download-ecapa-model.sh
+          scripts/run-ecapa-ort-tests.sh
+          AIRO_ECAPA_E2E=1 scripts/run-ecapa-ort-tests.sh
+
+      # Mind whisper FRB — requires Rust 1.88+ and cargo-expand; host stable is 1.83.
+      - name: Mind whisper FRB bindings check
+        run: |
+          chmod +x scripts/regenerate-mind-whisper-frb.sh scripts/check-mind-whisper-frb.sh
+          scripts/check-mind-whisper-frb.sh
+
+      # Runtime v1 condition 9 (#1311, tracked on #1340): "every runtime
+      # contract has automated conformance tests." `cargo test --workspace`
+      # above already runs these as ordinary tests -- this step is the mechanical
+      # gate on top of that: it *discovers* every `tests/*conformance*.rs`
+      # file in the workspace structurally (so a new one lands covered
+      # without editing this workflow) and reports which of the spec's S1-S5
+      # suites currently have a tagged test, so a suite silently having zero
+      # coverage is a build artifact a human can see, not something only a
+      # council review would catch. See
+      # docs/superpowers/specs/2026-07-28-airo-mind-conformance-suite.md.
+      - name: Airo Mind runtime conformance suite (#1311 condition 9)
+        run: scripts/run-mind-conformance-suite.sh
+
+      # Condition 10 (#1311): "every performance contract has benchmark gates
+      # in CI." `benchmark_gate_conformance.rs` (discovered and run above as
+      # part of the conformance suite, since its filename matches
+      # `*conformance*.rs`) asserts operation-log append and projection
+      # rebuild cost scale linearly, not worse, with input size -- a
+      # relative, scale-invariant claim chosen specifically because it is
+      # reliable on a shared runner, unlike an absolute wall-clock budget.
+      # This step exists only to name the gate explicitly in the job log; the
+      # test itself already ran and already failed the step above if it
+      # regressed.
+      - name: Benchmark gate — scaling regression check (#1311 condition 10)
+        run: |
+          echo "Verified above by scripts/run-mind-conformance-suite.sh:"
+          echo "  operation_log_append_scales_linearly_not_worse"
+          echo "  projection_rebuild_from_scratch_scales_linearly_not_worse"
+          echo "See rust/airo_mind_core/tests/benchmark_gate_conformance.rs for the threshold and why it is ratio-based rather than absolute."
+
+  # ── Android cross-compile ──────────────────────────────────────────────────
+  build-android:
+    name: Android (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    needs: test-host
+    strategy:
+      matrix:
+        target:
+          - aarch64-linux-android    # arm64-v8a  (primary)
+          - armv7-linux-androideabi  # armeabi-v7a
+          - x86_64-linux-android     # x86_64 (emulator)
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: android-${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: android-${{ matrix.target }}-cargo-
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Set up JDK 17 (for NDK)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install NDK
+        run: echo "y" | sdkmanager "ndk;27.2.12479018"
+
+      - name: Build ${{ matrix.target }}
+        run: |
+          cd rust
+          cargo ndk --target ${{ matrix.target }} --platform 21 \
+            build --release --manifest-path airo_core/Cargo.toml
+
+      # Mind whisper + ECAPA on Android arm64 when ORT is installed.
+      - name: Android whisper ECAPA cross-compile (arm64)
+        if: matrix.target == 'aarch64-linux-android'
+        run: |
+          chmod +x scripts/install-onnxruntime-android.sh
+          source scripts/install-onnxruntime-android.sh
+          cd rust
+          cargo ndk --target aarch64-linux-android --platform 21 \
+            build --release -p airo_mind_whisper --features whisper,ecapa
+
+  # ── macOS / iOS ────────────────────────────────────────────────────────────
+  build-apple:
+    name: Apple (${{ matrix.target }})
+    runs-on: macos-latest
+    needs: test-host
+    strategy:
+      matrix:
+        target:
+          - aarch64-apple-ios
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: apple-${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: apple-${{ matrix.target }}-cargo-
+
+      - run: |
+          cd rust
+          cargo build --release --target ${{ matrix.target }} \
+            --manifest-path airo_core/Cargo.toml
+
+  # ── Linux / Windows ───────────────────────────────────────────────────────
+  build-desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: test-host
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: desktop-${{ matrix.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: desktop-${{ matrix.os }}-cargo-
+
+      # Same ggml ODR exclusion as test-host: the CLI is a macOS-lenient
+      # combined link and must not be part of Linux/Windows `--workspace`.
+      - run: cargo build --release --manifest-path rust/Cargo.toml --workspace --exclude airo_mind_cli

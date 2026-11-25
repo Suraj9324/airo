@@ -1,0 +1,8 @@
+name: chess
+description: Stub implementation of chess package for TV builds
+version: 0.8.1
+publish_to: none
+
+environment:
+  sdk: '>=3.12.2 <4.0.0'
+  flutter: '>=3.44.4'

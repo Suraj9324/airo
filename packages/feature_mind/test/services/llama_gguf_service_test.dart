@@ -1,0 +1,359 @@
+import 'dart:io';
+
+import 'package:core_ai/core_ai.dart';
+import 'package:core_completion/core_completion.dart';
+import 'package:feature_mind/src/services/desktop_gguf_backend.dart';
+import 'package:feature_mind/src/services/llama_gguf_service.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:llama_flutter_android/llama_flutter_android.dart';
+import 'package:llama_flutter_android/src/llama_api.dart' as llama_api;
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  tearDown(() {
+    debugDefaultTargetPlatformOverride = null;
+    _clearLlamaHostHandlers();
+  });
+
+  test(
+    'accepts an injected native controller without probing the platform',
+    () {
+      final controller = LlamaController(
+        binaryMessenger:
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger,
+      );
+
+      final service = LlamaGgufService(nativeController: controller);
+
+      expect(service.generate(prompt: 'hello'), emitsError(isA<StateError>()));
+    },
+  );
+
+  test('reports unavailable off Android when desktop probe fails', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    final service = LlamaGgufService(
+      desktopAvailabilityOverride: () async => false,
+    );
+    final model = OfflineModelInfo(
+      id: 'gguf-release-check',
+      name: 'GGUF release check',
+      family: ModelFamily.llama,
+      fileSizeBytes: 1024,
+      filePath: '/tmp/model.gguf',
+    );
+
+    expect(service.isPlatformSupported, isFalse);
+    expect(service.isDesktopGgufSupported, isTrue);
+    await expectLater(service.isAvailable(), completion(isFalse));
+    await expectLater(service.loadModel(model), completion(isFalse));
+    await expectLater(service.unload(), completes);
+  });
+
+  test(
+    'rejects missing model paths before touching the native adapter',
+    () async {
+      final service = LlamaGgufService();
+      const model = OfflineModelInfo(
+        id: 'gguf-missing-path',
+        name: 'GGUF missing path',
+        family: ModelFamily.llama,
+        fileSizeBytes: 1024,
+        filePath: '   ',
+      );
+
+      await expectLater(service.loadModel(model), completion(isFalse));
+      expect(service.generate(prompt: 'hello'), emitsError(isA<StateError>()));
+      await expectLater(service.stop(), completes);
+    },
+  );
+
+  test(
+    'loads GGUF models through the Android adapter with a clamped context',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final calls = <String, Object?>{};
+      _mockLlamaHost(
+        onLoadModel: (config) {
+          calls['modelPath'] = config.modelPath;
+          calls['threads'] = config.nThreads;
+          calls['contextSize'] = config.contextSize;
+          calls['gpuLayers'] = config.nGpuLayers;
+        },
+      );
+      final controller = LlamaController(
+        binaryMessenger:
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger,
+      );
+      final service = LlamaGgufService(nativeController: controller);
+      const model = OfflineModelInfo(
+        id: 'gguf-android',
+        name: 'GGUF Android',
+        family: ModelFamily.llama,
+        fileSizeBytes: 1024,
+        filePath: '/models/release.gguf',
+        contextLength: 16384,
+      );
+
+      await expectLater(service.isAvailable(), completion(isTrue));
+      await expectLater(
+        service.loadModel(model, contextSize: 32768, threads: 6),
+        completion(isTrue),
+      );
+      await expectLater(service.unload(), completes);
+
+      expect(calls['modelPath'], '/models/release.gguf');
+      expect(calls['threads'], 6);
+      expect(calls['contextSize'], 8192);
+      expect(calls['gpuLayers'], 16);
+    },
+  );
+
+  test('streams generated GGUF tokens and disposes native resources', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    var disposed = false;
+    _mockLlamaHost(onDispose: () => disposed = true);
+    final controller = LlamaController(
+      binaryMessenger:
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger,
+    );
+    final service = LlamaGgufService(nativeController: controller);
+    const model = OfflineModelInfo(
+      id: 'gguf-stream',
+      name: 'GGUF stream',
+      family: ModelFamily.llama,
+      fileSizeBytes: 1024,
+      filePath: '/models/stream.gguf',
+    );
+
+    await expectLater(service.loadModel(model), completion(isTrue));
+    final expectation = expectLater(
+      service.generate(prompt: 'say hello'),
+      emitsInOrder(<Object?>['hello', ' gguf', emitsDone]),
+    );
+    await Future<void>.delayed(Duration.zero);
+    controller.onToken('hello');
+    controller.onToken(' gguf');
+    controller.onDone();
+    await expectation;
+    await expectLater(service.unload(), completes);
+
+    expect(disposed, isTrue);
+  });
+
+  test('collectBenchSample times the Android token stream', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    _mockLlamaHost();
+    final controller = LlamaController(
+      binaryMessenger:
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger,
+    );
+    final service = LlamaGgufService(nativeController: controller);
+    const model = OfflineModelInfo(
+      id: 'gguf-bench',
+      name: 'GGUF bench',
+      family: ModelFamily.llama,
+      fileSizeBytes: 1024,
+      filePath: '/models/bench.gguf',
+    );
+
+    await expectLater(service.loadModel(model), completion(isTrue));
+    expect(service.isLoaded, isTrue);
+
+    final sampleFuture = service.collectBenchSample(
+      prompt: 'bench',
+      maxOutputTokens: 8,
+    );
+    await Future<void>.delayed(Duration.zero);
+    controller.onToken('one');
+    controller.onToken(' two');
+    controller.onDone();
+    final sample = await sampleFuture;
+
+    expect(sample.generatedTokens, 2);
+    expect(sample.tokensPerSecond, greaterThan(0));
+    expect(sample.peakRssBytes, 0);
+    expect(sample.prefillTokens, 0);
+    await expectLater(service.unload(), completes);
+  });
+
+  test('Android prefers the FRB llama slot when it can load', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    final tempDir = await Directory.systemTemp.createTemp('airo-mind-gguf-');
+    addTearDown(() async {
+      if (tempDir.existsSync()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+    final weight = File('${tempDir.path}/qwen.gguf');
+    await weight.writeAsBytes(const [1, 2, 3]);
+    final session = _FakeLlamaSession();
+    final backend = DesktopGgufBackend(
+      ensureBridge: () async {},
+      session: session,
+    );
+    var jniLoaded = false;
+    _mockLlamaHost(
+      onLoadModel: (_) {
+        jniLoaded = true;
+      },
+    );
+    final controller = LlamaController(
+      binaryMessenger:
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger,
+    );
+    final service = LlamaGgufService(
+      nativeController: controller,
+      desktopBackend: backend,
+    );
+    final model = OfflineModelInfo(
+      id: 'gguf-android-ffi',
+      name: 'GGUF Android FFI',
+      family: ModelFamily.llama,
+      fileSizeBytes: 3,
+      filePath: weight.path,
+    );
+
+    await expectLater(service.loadModel(model), completion(isTrue));
+    expect(session.loadPaths, [weight.path]);
+    expect(jniLoaded, isFalse);
+    expect(service.isLoaded, isTrue);
+  });
+
+  test('forwards grammar to an injected native completion backend', () async {
+    final native = _RecordingNativeBackend();
+    final service = LlamaGgufService(nativeBackend: native);
+    expect(
+      await service
+          .generate(prompt: 'repair', grammar: 'root ::= object', maxTokens: 32)
+          .toList(),
+      ['ok'],
+    );
+    expect(native.prompt, 'repair');
+    expect(native.grammar, 'root ::= object');
+    expect(native.maxTokens, 32);
+  });
+}
+
+class _RecordingNativeBackend implements GgufNativeBackend {
+  String? prompt;
+  String? grammar;
+  int? maxTokens;
+
+  @override
+  bool get isReady => true;
+
+  @override
+  Stream<String> generate({
+    required String prompt,
+    required int maxTokens,
+    String? grammar,
+  }) {
+    this.prompt = prompt;
+    this.grammar = grammar;
+    this.maxTokens = maxTokens;
+    return Stream.fromIterable(const ['ok']);
+  }
+
+  @override
+  Future<void> stop() async {}
+}
+
+class _FakeLlamaSession extends DesktopLlamaSession {
+  final loadPaths = <String>[];
+  var ready = false;
+
+  @override
+  Future<void> load({
+    required String modelPath,
+    required int memoryBudgetMb,
+  }) async {
+    loadPaths.add(modelPath);
+    ready = true;
+  }
+
+  @override
+  bool get isReady => ready;
+
+  @override
+  void unload() {
+    ready = false;
+  }
+}
+
+typedef _ModelConfigSpy = void Function(ModelConfig config);
+typedef _GenerateRequestSpy = void Function(GenerateRequest request);
+
+void _mockLlamaHost({
+  _ModelConfigSpy? onLoadModel,
+  _GenerateRequestSpy? onGenerate,
+  VoidCallback? onDispose,
+}) {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockDecodedMessageHandler(_hostChannel('detectGpu'), (_) async {
+    return <Object?>[
+      GpuInfo(
+        vulkanSupported: true,
+        gpuName: 'Test GPU',
+        vulkanApiVersion: 4206592,
+        deviceLocalMemoryBytes: 8 * 1024 * 1024 * 1024,
+        freeRamBytes: 5 * 1024 * 1024 * 1024,
+        recommendedGpuLayers: 16,
+      ),
+    ];
+  });
+  messenger.setMockDecodedMessageHandler(_hostChannel('isModelLoaded'), (
+    _,
+  ) async {
+    return <Object?>[false];
+  });
+  messenger.setMockDecodedMessageHandler(_hostChannel('loadModel'), (
+    message,
+  ) async {
+    final args = (message as List<Object?>?)!;
+    onLoadModel?.call(args.single! as ModelConfig);
+    return <Object?>[];
+  });
+  messenger.setMockDecodedMessageHandler(_hostChannel('generate'), (
+    message,
+  ) async {
+    final args = (message as List<Object?>?)!;
+    onGenerate?.call(args.single! as GenerateRequest);
+    return <Object?>[];
+  });
+  messenger.setMockDecodedMessageHandler(_hostChannel('stop'), (_) async {
+    return <Object?>[];
+  });
+  messenger.setMockDecodedMessageHandler(_hostChannel('dispose'), (_) async {
+    onDispose?.call();
+    return <Object?>[];
+  });
+  // Keep the analyzer aware that the test messenger is intentionally selected.
+  expect(messenger, isNotNull);
+}
+
+void _clearLlamaHostHandlers() {
+  for (final method in <String>[
+    'detectGpu',
+    'isModelLoaded',
+    'loadModel',
+    'generate',
+    'stop',
+    'dispose',
+  ]) {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockDecodedMessageHandler(_hostChannel(method), null);
+  }
+}
+
+BasicMessageChannel<Object?> _hostChannel(String method) {
+  return BasicMessageChannel<Object?>(
+    'dev.flutter.pigeon.llama_flutter_android.LlamaHostApi.$method',
+    llama_api.LlamaHostApi.pigeonChannelCodec,
+    binaryMessenger:
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger,
+  );
+}

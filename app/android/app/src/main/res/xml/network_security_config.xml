@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network Security Configuration for Airo App.
+
+    Play Store V2 uses a bring-your-own-content media-player model: users
+    supply arbitrary M3U/Xtream playlist URLs from providers we don't
+    control. Many real-world IPTV/Xtream providers serve streams over plain
+    HTTP, so cleartext is permitted at the base level to avoid breaking
+    playback for those sources. This is a deliberate compliance tradeoff,
+    not an oversight — TLS trust anchors are still enforced for any HTTPS
+    traffic the app makes (e.g. its own API calls).
+-->
+<network-security-config>
+    <!-- Base configuration: cleartext permitted for BYOC stream playback -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Debug configuration for development builds -->
+    <!-- Uncomment for debugging network issues with Charles/Fiddler proxy -->
+    <!--
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+    -->
+</network-security-config>

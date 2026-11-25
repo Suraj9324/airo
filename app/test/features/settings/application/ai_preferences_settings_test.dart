@@ -1,0 +1,111 @@
+import 'package:airo_app/features/settings/application/ai_preferences_settings.dart';
+import 'package:feature_iptv/feature_iptv.dart';
+import 'package:core_ai/core_ai.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:airo_app/core/ai/ai_router_service.dart';
+
+void main() {
+  test('persists AI preferences updates', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+    );
+    addTearDown(container.dispose);
+
+    final notifier = container.read(aiPreferencesSettingsProvider.notifier);
+    await Future<void>.delayed(Duration.zero);
+
+    await notifier.update(
+      const AIPreferencesSettings(
+        routingStrategy: AIRoutingStrategy.cloudPreferred,
+        autoFallback: false,
+        accelerationPreference: AIAccelerationPreference.cpuOnly,
+        threadCount: 6,
+        contextLength: 4096,
+        memoryBudgetPercent: 70,
+        debugLogging: true,
+        downloadLocation: AIDownloadLocationPreference.appManaged,
+        safetyProfile: SafetyProfile.balanced,
+        remoteServerUrl: 'http://127.0.0.1:11434/v1',
+        remoteServerModel: 'qwen2.5:7b',
+        remoteServerApiKey: 'secret',
+      ),
+    );
+
+    final state = container.read(aiPreferencesSettingsProvider);
+    expect(state.routingStrategy, AIRoutingStrategy.cloudPreferred);
+    expect(state.autoFallback, isFalse);
+    expect(state.accelerationPreference, AIAccelerationPreference.cpuOnly);
+    expect(state.threadCount, 6);
+    expect(state.contextLength, 4096);
+    expect(state.memoryBudgetPercent, 70);
+    expect(state.debugLogging, isTrue);
+    expect(state.downloadLocation, AIDownloadLocationPreference.appManaged);
+    expect(state.remoteServerUrl, 'http://127.0.0.1:11434/v1');
+    expect(state.remoteServerModel, 'qwen2.5:7b');
+    expect(state.remoteServerApiKey, 'secret');
+
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.routingStrategyKey),
+      AIRoutingStrategy.cloudPreferred.name,
+    );
+    expect(
+      prefs.getBool(AIPreferencesSettingsNotifier.autoFallbackKey),
+      isFalse,
+    );
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.accelerationKey),
+      AIAccelerationPreference.cpuOnly.name,
+    );
+    expect(prefs.getInt(AIPreferencesSettingsNotifier.threadCountKey), 6);
+    expect(prefs.getInt(AIPreferencesSettingsNotifier.contextLengthKey), 4096);
+    expect(prefs.getInt(AIPreferencesSettingsNotifier.memoryBudgetKey), 70);
+    expect(
+      prefs.getBool(AIPreferencesSettingsNotifier.debugLoggingKey),
+      isTrue,
+    );
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.downloadLocationKey),
+      AIDownloadLocationPreference.appManaged.name,
+    );
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.safetyProfileKey),
+      SafetyProfile.balanced.name,
+    );
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.remoteServerUrlKey),
+      'http://127.0.0.1:11434/v1',
+    );
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.remoteServerModelKey),
+      'qwen2.5:7b',
+    );
+    expect(
+      prefs.getString(AIPreferencesSettingsNotifier.remoteServerApiKeyKey),
+      'secret',
+    );
+    expect(container.read(aiRouterServiceProvider).hasRemoteServer, isTrue);
+  });
+
+  test('rehydrates the persisted remote server into the router', () async {
+    SharedPreferences.setMockInitialValues({
+      AIPreferencesSettingsNotifier.remoteServerUrlKey:
+          'http://127.0.0.1:11434/v1',
+      AIPreferencesSettingsNotifier.remoteServerModelKey: 'qwen2.5:7b',
+      AIPreferencesSettingsNotifier.remoteServerApiKeyKey: 'secret',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final container = ProviderContainer(
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+    );
+    addTearDown(container.dispose);
+
+    container.read(aiPreferencesSettingsProvider);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(container.read(aiRouterServiceProvider).hasRemoteServer, isTrue);
+  });
+}

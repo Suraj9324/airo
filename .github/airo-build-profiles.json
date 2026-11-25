@@ -1,0 +1,418 @@
+{
+  "schemaVersion": 1,
+  "sharedDependencyConstraints": {
+    "dio": "^5.10.0",
+    "equatable": "^2.1.0",
+    "flutter_chrome_cast": "^1.4.6",
+    "flutter_riverpod": "3.4.2",
+    "riverpod": "3.4.2",
+    "shared_preferences": "^2.5.5"
+  },
+  "profiles": [
+    {
+      "id": "full",
+      "releaseLine": "v2",
+      "description": "Full Airo app. Size is reported but not enforced as an edge profile.",
+      "entrypoint": "app/lib/main.dart",
+      "pubspec": "app/pubspec.yaml",
+      "appId": "io.airo.app",
+      "appVariant": "full",
+      "appPlatform": "mobileFull",
+      "ciBuild": true,
+      "edgeProfile": false,
+      "requiredPackages": [
+        "airo"
+      ],
+      "featureModules": [
+        "airo",
+        "feature_coin"
+      ],
+      "allowedNativePlugins": [
+        "*"
+      ],
+      "heavyPackages": [],
+      "requiredDependencyOverrides": {
+        "flutter_chrome_cast": "../packages/platform_player/third_party/flutter_chrome_cast"
+      },
+      "assetAllowlist": [],
+      "android": {
+        "apkArtifact": "app-arm64-v8a-release.apk",
+        "abiStrategy": "single-arm64-apk",
+        "releaseBudgetMb": 120,
+        "debugBudgetMb": 650,
+        "enforceReleaseBudget": false
+      }
+    },
+    {
+      "id": "tv",
+      "releaseLine": "v2",
+      "description": "Android TV and Fire TV IPTV profile.",
+      "entrypoint": "app/lib/main_tv.dart",
+      "pubspec": "app/pubspec_tv.yaml",
+      "appId": "com.developerscoffee.tv.midas",
+      "platformAppIds": {
+        "android": "com.developerscoffee.tv.midas",
+        "macos": "com.developerscoffee.airo.tv"
+      },
+      "appVariant": "tv",
+      "appPlatform": "androidTv",
+      "ciBuild": true,
+      "edgeProfile": true,
+      "requiredPackages": [
+        "airo",
+        "audio_service"
+      ],
+      "featureModules": [
+        "feature_iptv"
+      ],
+      "allowedNativePlugins": [
+        "audio_service",
+        "flutter_chrome_cast",
+        "shared_preferences",
+        "video_player",
+        "wakelock_plus"
+      ],
+      "heavyPackages": [
+        "stockfish",
+        "chess",
+        "flame",
+        "google_mlkit_text_recognition",
+        "just_audio",
+        "audioplayers",
+        "flutter_tts",
+        "image_picker",
+        "file_picker",
+        "share_plus",
+        "flutter_image_compress",
+        "flutter_contacts",
+        "permission_handler",
+        "flutter_local_notifications",
+        "timezone",
+        "pdfx"
+      ],
+      "legacyKotlinGradlePluginRiskPackages": [
+        "flutter_image_compress",
+        "flutter_tts",
+        "package_info_plus",
+        "pdfx",
+        "wakelock_plus"
+      ],
+      "requiredDependencyOverrides": {
+        "stockfish": "../packages/stubs/stockfish_stub",
+        "chess": "../packages/stubs/chess_stub",
+        "flame": "../packages/stubs/flame_stub",
+        "google_mlkit_text_recognition": "../packages/stubs/mlkit_stub",
+        "just_audio": "../packages/stubs/just_audio_stub",
+        "audioplayers": "../packages/stubs/audioplayers_stub",
+        "flutter_tts": "../packages/stubs/flutter_tts_stub",
+        "image_picker": "../packages/stubs/image_picker_stub",
+        "file_picker": "../packages/stubs/file_picker_stub",
+        "share_plus": "../packages/stubs/share_plus_stub",
+        "flutter_image_compress": "../packages/stubs/flutter_image_compress_stub",
+        "flutter_contacts": "../packages/stubs/flutter_contacts_stub",
+        "permission_handler": "../packages/stubs/permission_handler_stub",
+        "flutter_local_notifications": "../packages/stubs/flutter_local_notifications_stub",
+        "timezone": "../packages/stubs/timezone_stub",
+        "pdfx": "../packages/stubs/pdfx_stub",
+        "package_info_plus": "../packages/stubs/package_info_plus_stub",
+        "wakelock_plus": "../packages/stubs/wakelock_plus_stub",
+        "flutter_chrome_cast": "../packages/platform_player/third_party/flutter_chrome_cast"
+      },
+      "assetAllowlist": [
+        "assets/airo_icon.png"
+      ],
+      "android": {
+        "apkArtifact": "app-arm64-v8a-release.apk",
+        "abiStrategy": "single-arm64-apk",
+        "releaseBudgetMb": 35,
+        "debugBudgetMb": 650,
+        "enforceReleaseBudget": true,
+        "universalApkArtifact": "app-release.apk",
+        "universalBudgetMb": 80,
+        "universalRationale": "Store listings accept one APK per version, so a single-ABI build silently excludes 32-bit and x86_64 devices. This universal APK is for store distribution only; the 35 MB releaseBudgetMb still governs the arm64 edge artifact and is unchanged."
+      },
+      "macos": {
+        "appName": "Airo TV",
+        "bundleId": "com.developerscoffee.airo.tv",
+        "artifactZip": "Airo-TV-macOS.zip",
+        "artifactDmg": "Airo-TV-macOS.dmg",
+        "distribution": [
+          "github-release",
+          "homebrew-cask"
+        ],
+        "signing": "optional-developer-id",
+        "notarization": "optional-required-for-public-direct-download"
+      }
+    },
+    {
+      "id": "fire-tv",
+      "releaseLine": "v2",
+      "description": "Aika Stream for Fire OS via the Amazon Appstore (GMS-free gates).",
+      "entrypoint": "app/lib/main_tv.dart",
+      "pubspec": "app/pubspec_tv.yaml",
+      "appId": "com.developerscoffee.tv.midas",
+      "platformAppIds": {
+        "android": "com.developerscoffee.tv.midas"
+      },
+      "appVariant": "fireTv",
+      "appPlatform": "androidTv",
+      "deviceClass": "tv",
+      "ciBuild": true,
+      "edgeProfile": true,
+      "requiredPackages": [
+        "airo",
+        "audio_service"
+      ],
+      "featureModules": [
+        "feature_iptv"
+      ],
+      "allowedNativePlugins": [
+        "audio_service",
+        "flutter_chrome_cast",
+        "shared_preferences",
+        "video_player",
+        "wakelock_plus"
+      ],
+      "heavyPackages": [
+        "stockfish",
+        "chess",
+        "flame",
+        "google_mlkit_text_recognition",
+        "just_audio",
+        "audioplayers",
+        "flutter_tts",
+        "image_picker",
+        "file_picker",
+        "share_plus",
+        "flutter_image_compress",
+        "flutter_contacts",
+        "permission_handler",
+        "flutter_local_notifications",
+        "timezone",
+        "pdfx"
+      ],
+      "legacyKotlinGradlePluginRiskPackages": [
+        "flutter_image_compress",
+        "flutter_tts",
+        "package_info_plus",
+        "pdfx",
+        "wakelock_plus"
+      ],
+      "requiredDependencyOverrides": {
+        "stockfish": "../packages/stubs/stockfish_stub",
+        "chess": "../packages/stubs/chess_stub",
+        "flame": "../packages/stubs/flame_stub",
+        "google_mlkit_text_recognition": "../packages/stubs/mlkit_stub",
+        "just_audio": "../packages/stubs/just_audio_stub",
+        "audioplayers": "../packages/stubs/audioplayers_stub",
+        "flutter_tts": "../packages/stubs/flutter_tts_stub",
+        "image_picker": "../packages/stubs/image_picker_stub",
+        "file_picker": "../packages/stubs/file_picker_stub",
+        "share_plus": "../packages/stubs/share_plus_stub",
+        "flutter_image_compress": "../packages/stubs/flutter_image_compress_stub",
+        "flutter_contacts": "../packages/stubs/flutter_contacts_stub",
+        "permission_handler": "../packages/stubs/permission_handler_stub",
+        "flutter_local_notifications": "../packages/stubs/flutter_local_notifications_stub",
+        "timezone": "../packages/stubs/timezone_stub",
+        "pdfx": "../packages/stubs/pdfx_stub",
+        "package_info_plus": "../packages/stubs/package_info_plus_stub",
+        "wakelock_plus": "../packages/stubs/wakelock_plus_stub",
+        "flutter_chrome_cast": "../packages/platform_player/third_party/flutter_chrome_cast"
+      },
+      "assetAllowlist": [
+        "assets/airo_icon.png"
+      ],
+      "android": {
+        "apkArtifact": "app-arm64-v8a-release.apk",
+        "abiStrategy": "single-arm64-apk",
+        "releaseBudgetMb": 35,
+        "debugBudgetMb": 650,
+        "enforceReleaseBudget": true
+      }
+    },
+    {
+      "id": "coins",
+      "releaseLine": "v2",
+      "description": "Focused Airo Coins local-first vault app.",
+      "entrypoint": "app/lib/main_coins.dart",
+      "pubspec": "app/pubspec_coins.yaml",
+      "appId": "io.airo.app.coins",
+      "appVariant": "coins",
+      "appPlatform": "mobileFull",
+      "deviceClass": "phone",
+      "ciBuild": true,
+      "edgeProfile": true,
+      "requiredPackages": [
+        "feature_coin"
+      ],
+      "featureModules": [
+        "feature_coin"
+      ],
+      "allowedNativePlugins": [
+        "flutter_secure_storage",
+        "local_auth",
+        "path_provider",
+        "screen_protector",
+        "sqflite"
+      ],
+      "heavyPackages": [],
+      "requiredDependencyOverrides": {
+        "screen_protector": "../packages/platform_player/third_party/screen_protector"
+      },
+      "assetAllowlist": [],
+      "android": {
+        "apkArtifact": "app-arm64-v8a-release.apk",
+        "abiStrategy": "single-arm64-apk",
+        "releaseBudgetMb": 25,
+        "debugBudgetMb": 200,
+        "enforceReleaseBudget": true
+      }
+    },
+    {
+      "id": "mind",
+      "releaseLine": "v2",
+      "description": "Airo Mind: on-device meeting scribe and assistant.",
+      "entrypoint": "app/lib/main_mind.dart",
+      "pubspec": "app/pubspec_mind.yaml",
+      "appId": "io.airo.app.mind",
+      "appVariant": "mind",
+      "appPlatform": "mobileFull",
+      "deviceClass": "phone",
+      "ciBuild": false,
+      "edgeProfile": false,
+      "requiredPackages": [
+        "feature_mind",
+        "audio_service"
+      ],
+      "featureModules": [
+        "feature_mind"
+      ],
+      "allowedNativePlugins": [
+        "audio_service",
+        "audioplayers",
+        "connectivity_plus",
+        "firebase_auth",
+        "firebase_core",
+        "flutter_image_compress",
+        "flutter_tts",
+        "google_sign_in",
+        "image_picker",
+        "package_info_plus",
+        "path_provider",
+        "shared_preferences",
+        "sqlite3_flutter_libs",
+        "url_launcher"
+      ],
+      "heavyPackages": [
+        "stockfish",
+        "chess",
+        "flame",
+        "google_mlkit_text_recognition"
+      ],
+      "requiredDependencyOverrides": {
+        "stockfish": "../packages/stubs/stockfish_stub",
+        "chess": "../packages/stubs/chess_stub",
+        "flame": "../packages/stubs/flame_stub",
+        "google_mlkit_text_recognition": "../packages/stubs/mlkit_stub",
+        "flutter_chrome_cast": "../packages/platform_player/third_party/flutter_chrome_cast",
+        "screen_protector": "../packages/platform_player/third_party/screen_protector"
+      },
+      "assetAllowlist": [],
+      "android": {
+        "apkArtifact": "app-arm64-v8a-release.apk",
+        "abiStrategy": "single-arm64-apk",
+        "releaseBudgetMb": 120,
+        "debugBudgetMb": 650,
+        "enforceReleaseBudget": false
+      }
+    },
+    {
+      "id": "anya",
+      "releaseLine": "v2",
+      "description": "Anya: local-first personal nutrition planner.",
+      "entrypoint": "app/lib/main_anya.dart",
+      "pubspec": "app/pubspec_anya.yaml",
+      "appId": "io.airo.app.anya",
+      "appVariant": "anya",
+      "appPlatform": "mobileFull",
+      "deviceClass": "phone",
+      "ciBuild": false,
+      "edgeProfile": false,
+      "requiredPackages": [
+        "feature_anya"
+      ],
+      "featureModules": [
+        "feature_anya"
+      ],
+      "allowedNativePlugins": [
+        "file_picker",
+        "shared_preferences"
+      ],
+      "heavyPackages": [],
+      "requiredDependencyOverrides": {},
+      "assetAllowlist": [],
+      "android": {
+        "apkArtifact": "app-arm64-v8a-release.apk",
+        "abiStrategy": "single-arm64-apk",
+        "releaseBudgetMb": 40,
+        "debugBudgetMb": 200,
+        "enforceReleaseBudget": false
+      }
+    },
+    {
+      "id": "ios-spm",
+      "releaseLine": "v2",
+      "description": "iOS Swift Package Manager dependency profile.",
+      "entrypoint": "app/lib/main.dart",
+      "pubspec": "app/pubspec_ios_spm.yaml",
+      "appId": "com.developerscoffee.airo",
+      "appVariant": "full",
+      "appPlatform": "ios",
+      "ciBuild": false,
+      "edgeProfile": false,
+      "requiredPackages": [
+        "airo"
+      ],
+      "featureModules": [
+        "airo",
+        "feature_coin"
+      ],
+      "allowedNativePlugins": [
+        "*"
+      ],
+      "heavyPackages": [],
+      "requiredDependencyOverrides": {
+        "flutter_chrome_cast": "../packages/platform_player/third_party/flutter_chrome_cast"
+      },
+      "assetAllowlist": []
+    },
+    {
+      "id": "web-validation",
+      "releaseLine": "v2",
+      "description": "Local browser validation profile for the full Airo app.",
+      "entrypoint": "app/lib/main.dart",
+      "pubspec": "app/pubspec.yaml",
+      "appId": "web",
+      "appVariant": "full",
+      "appPlatform": "webFull",
+      "ciBuild": false,
+      "edgeProfile": false,
+      "requiredPackages": [
+        "feature_iptv"
+      ],
+      "featureModules": [
+        "feature_iptv"
+      ],
+      "allowedNativePlugins": [],
+      "heavyPackages": [],
+      "requiredDependencyOverrides": {
+        "flutter_chrome_cast": "../packages/platform_player/third_party/flutter_chrome_cast"
+      },
+      "assetAllowlist": [],
+      "web": {
+        "requiresCorsPlaylistServer": true,
+        "buildMode": "profile"
+      }
+    }
+  ]
+}

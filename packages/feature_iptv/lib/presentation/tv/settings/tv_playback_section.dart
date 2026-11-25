@@ -1,0 +1,207 @@
+import 'package:core_ui/core_ui.dart';
+import 'package:feature_iptv/feature_iptv.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+/// Playback preferences for the TV settings screen (CV-022): the default
+/// video aspect-ratio fit. Reuses [videoAspectRatioProvider] — the same
+/// provider the in-player aspect-ratio cycle button already drives.
+///
+/// No Picture-in-Picture toggle here: PiP is a phone/tablet multitasking
+/// concept with no Android TV / Fire TV equivalent (there's no multi-window
+/// model to float the video into), so it's excluded from the TV settings
+/// entirely rather than offered as a no-op.
+class TvPlaybackSection extends ConsumerWidget {
+  const TvPlaybackSection({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final current = ref.watch(videoAspectRatioProvider);
+    final extraSections = ref.watch(playbackSettingsExtraSectionsProvider);
+    final resumeEnabled = ref.watch(resumeLastChannelEnabledProvider);
+    final remaining = ref.watch(sleepTimerRemainingProvider);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ListView(
+      children: [
+        for (var index = 0; index < AiroPlaybackViewFit.values.length; index++)
+          Padding(
+            padding: EdgeInsets.only(
+              bottom: index == AiroPlaybackViewFit.values.length - 1 ? 0 : 8,
+            ),
+            child: _AspectRatioOption(
+              fit: AiroPlaybackViewFit.values[index],
+              isSelected: AiroPlaybackViewFit.values[index] == current,
+              autofocus: index == 0,
+              onSelect: () => ref
+                  .read(videoAspectRatioProvider.notifier)
+                  .setAspectRatio(AiroPlaybackViewFit.values[index]),
+              labelFor: _labelFor,
+              colorScheme: colorScheme,
+            ),
+          ),
+        const SizedBox(height: 16),
+        TvFocusable(
+          onSelect: () => ref
+              .read(resumeLastChannelEnabledProvider.notifier)
+              .setEnabled(!resumeEnabled),
+          semanticLabel: resumeEnabled
+              ? 'Resume last channel, on'
+              : 'Resume last channel, off',
+          semanticButton: true,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Resume last channel',
+                        style: TextStyle(
+                          color: colorScheme.onSurface,
+                          fontSize: 16,
+                        ),
+                      ),
+                      Text(
+                        'Open the last live channel when Aika Stream starts.',
+                        style: TextStyle(
+                          color: colorScheme.onSurfaceVariant,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  resumeEnabled ? 'On' : 'Off',
+                  style: TextStyle(color: colorScheme.primary, fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+        Text(
+          'Sleep timer',
+          style: TextStyle(color: colorScheme.primary, fontSize: 16),
+        ),
+        Text(
+          'Stop playback and return to Library after this time.',
+          style: TextStyle(color: colorScheme.onSurfaceVariant, fontSize: 13),
+        ),
+        const SizedBox(height: 8),
+        for (final minutes in [0, 15, 30, 45, 60])
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TvFocusable(
+              key: ValueKey('playback-sleep-timer-$minutes'),
+              onSelect: () {
+                if (minutes == 0) {
+                  ref.read(sleepTimerRemainingProvider.notifier).cancel();
+                } else {
+                  ref
+                      .read(sleepTimerRemainingProvider.notifier)
+                      .setMinutes(minutes);
+                }
+              },
+              semanticLabel: minutes == 0
+                  ? 'Sleep timer off'
+                  : 'Sleep timer $minutes minutes',
+              semanticButton: true,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        minutes == 0 ? 'Off' : '$minutes minutes',
+                        style: TextStyle(
+                          color: colorScheme.onSurface,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    if ((remaining == 0 && minutes == 0) ||
+                        remaining == minutes)
+                      Icon(Icons.check, color: colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        if (extraSections.isNotEmpty) const SizedBox(height: 24),
+        ...extraSections,
+      ],
+    );
+  }
+
+  /// Matches the meaning documented on
+  /// `_VideoPlayerWidgetState._boxFitFor` in video_player_widget.dart.
+  String _labelFor(AiroPlaybackViewFit fit) {
+    return switch (fit) {
+      AiroPlaybackViewFit.contain => 'Fit (letterboxed)',
+      AiroPlaybackViewFit.cover => 'Fill screen (cropped)',
+      AiroPlaybackViewFit.fill => 'Fill width',
+      AiroPlaybackViewFit.stretch => 'Stretch to fill',
+    };
+  }
+}
+
+class _AspectRatioOption extends StatelessWidget {
+  const _AspectRatioOption({
+    required this.fit,
+    required this.isSelected,
+    required this.autofocus,
+    required this.onSelect,
+    required this.labelFor,
+    required this.colorScheme,
+  });
+
+  final AiroPlaybackViewFit fit;
+  final bool isSelected;
+  final bool autofocus;
+  final VoidCallback onSelect;
+  final String Function(AiroPlaybackViewFit fit) labelFor;
+  final ColorScheme colorScheme;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = labelFor(fit);
+
+    return TvFocusable(
+      autofocus: autofocus,
+      onSelect: onSelect,
+      semanticLabel: label,
+      semanticButton: true,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: isSelected
+              ? colorScheme.primaryContainer
+              : colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              // Flexible rather than Text + Spacer: the row has to survive a
+              // narrower viewport (the TV shell reserves a title-safe margin)
+              // and long localised labels, either of which overflowed a
+              // fixed-width label.
+              Expanded(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: colorScheme.onSurface, fontSize: 16),
+                ),
+              ),
+              if (isSelected) Icon(Icons.check, color: colorScheme.primary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

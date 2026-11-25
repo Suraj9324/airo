@@ -1,0 +1,74 @@
+# Repository Health Status
+
+This document records the repository-health baseline for the v2 public-release
+wave. It is backed by the local `core_release` repository-health preflight.
+
+Implementation work for this release line must start from latest `origin/main`.
+
+## Local Evidence Command
+
+```bash
+dart run melos run release:repo-health-preflight
+```
+
+The default command is expected to fail until maintainers record the remaining
+governance decisions. To produce passing evidence after those decisions are
+made, set:
+
+```bash
+AIRO_REPO_DISCUSSIONS=<enabled|not_required> \
+AIRO_REPO_CODEOWNERS=present \
+AIRO_REPO_FUNDING=present \
+dart run melos run release:repo-health-preflight
+```
+
+Use `AIRO_REPO_CODEOWNERS=present` because a `.github/CODEOWNERS` file is
+present in the repository. Use `AIRO_REPO_FUNDING=present` because
+`.github/FUNDING.yml` is present. Set `AIRO_REPO_DISCUSSIONS` to `enabled` if
+GitHub Discussions are turned on for this release wave, or `not_required` if
+the release manager intentionally defers Discussions.
+
+## Verified Repo-Visible Files
+
+- `README.md`
+- `SECURITY.md`
+- `CONTRIBUTING.md`
+- `CODE_OF_CONDUCT.md`
+- `.github/CODEOWNERS`
+- `.github/PULL_REQUEST_TEMPLATE.md`
+- `.github/ISSUE_TEMPLATE/user_bug_report.md`
+- `.github/ISSUE_TEMPLATE/feature_request.yml`
+- `.github/ISSUE_TEMPLATE/question.yml`
+- `.github/ISSUE_TEMPLATE/agent_task.md`
+- `docs/release/RELEASE_CHECKLIST.md`
+- `docs/release/V2_PUBLISHING_HUMAN_SETUP.md`
+- `docs/release/V2_HUMAN_IN_LOOP_BLOCKERS.md`
+- `docs/release/STORE_COMPLIANCE.md`
+- `docs/release/V2_RELEASE_ORCHESTRATOR.md`
+- `.github/FUNDING.yml`
+
+## Label Taxonomy
+
+The local preflight verifies that the repository label taxonomy covers:
+
+- `release/v2.0.0.1`
+- `store-readiness`
+- `platform-android`
+- `airo-tv`
+- `fire-tv`
+- `documentation`
+- `agent/security`
+- `agent/ci-cd`
+- `agent/qa-testing`
+- `blocked`
+
+## Remaining Maintainer Decisions
+
+- Decide whether GitHub Discussions should be enabled or intentionally deferred.
+
+## Deferred Items
+
+Repository settings that cannot be read from the local checkout remain
+human-confirmed evidence. The release manager should attach the generated
+repository-health JSON/Markdown evidence to the release record after decisions
+are made.

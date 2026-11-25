@@ -1,0 +1,186 @@
+# Aika Stream Store Listing Metadata
+
+Canonical listing metadata for the first Google Play Android TV listing of
+Aika Stream (`com.developerscoffee.tv.midas`). Feature claims stay inside
+[Aika Stream Feature Matrix](./AIKA_STREAM_FEATURE_MATRIX.md). Do not claim recording,
+cloud playlists, bundled channels, or a public IPTV catalogue.
+
+See [Aika Stream Play Store gate](./AIKA_STREAM_PLAY_STORE_GATE.md) for the
+package-ID cutover and human console actions.
+
+## Release Scope
+
+| Field | Value |
+| --- | --- |
+| Product | Aika Stream |
+| Android package ID | `com.developerscoffee.tv.midas` |
+| Entrypoint | `app/lib/main_tv.dart` |
+| Device class | Android TV, Google TV, Fire TV-compatible APK testing, plus Android phone/tablet |
+| First Play wave | Android TV / Google Play TV track, expanded to phone/tablet (`android.software.leanback` no longer `required`) |
+| iOS / App Store | Deferred from the first Android publishing wave |
+| Privacy Policy URL | `https://developerscoffee.github.io/airo/legal/privacy-policy/` |
+| Terms URL | `https://developerscoffee.github.io/airo/legal/terms-conditions/` |
+
+## Google Play Store
+
+| Field | Final metadata |
+| --- | --- |
+| App name | `Aika Stream` |
+| Short description | `Your sources. Your screen. An Android TV player for authorized M3U playlists.` |
+| Category | Video Players & Editors |
+| Tags / keywords | M3U, M3U8, playlist player, Android TV, Google TV, Chromecast, Cast, HLS |
+| Privacy Policy URL | `https://developerscoffee.github.io/airo/legal/privacy-policy/` |
+| Data deletion URL | `https://developerscoffee.github.io/airo/legal/data-deletion/` |
+| Website | `https://developerscoffee.github.io/airo/aika-stream/` |
+| Content rating | Complete the IARC questionnaire in Play Console before submission. |
+
+Short description length: 77/80 characters.
+
+### Full Description
+
+```text
+Aika Stream is a media player for Android TV and Google TV. Your sources.
+Your screen.
+
+Add an M3U or M3U8 playlist you are authorized to use, then browse, search,
+and play it with a remote. The app does not include channels, playlists,
+subscriptions, or a media catalog.
+
+On Android TV you can:
+• Load M3U, M3U8, Xtream, Stalker, or Jellyfin sources
+• Search channels by name and keep favorites on the device
+• Add an XMLTV guide for programs that are on now
+• Switch audio and subtitle tracks when the stream provides them
+• Browse USB or removable media on supported devices
+• Use Chromecast when your TV, phone, and network allow it
+
+Aika Stream is a player only. It does not provide, host, sell, or distribute
+TV channels or IPTV services. Recording and cloud playlists are not included.
+
+Learn more at https://developerscoffee.github.io/airo/aika-stream/
+
+Playback depends on your source, codec, device, and network.
+```
+
+Full description length: 922/4,000 characters.
+
+### Release notes (What's new)
+
+Paste into Play Console → Internal testing → Release notes. Keep under 500
+characters. Do not claim bundled channels or Aika Stream Pro.
+
+```text
+0.0.3 (25)
+• Two-pane live split no longer paints a fat black divider
+• Videos meet; drag still uses a 48dp (phone) / 24dp (TV) hit
+
+0.0.3 (24)
+• Guide loads a country programme file when you pick a country
+• World-size guide URLs are rejected before they can crash the app
+• Two-pane live split snaps 5 / 50 / 95; mix follows the bar
+
+0.0.2 (21)
+• TV remote can move across visible playback controls
+• Split view keeps only the featured channel audible
+• Phone, tablet, and Android TV / D-pad from one listing
+
+0.0.1 (17)
+Your sources. Your screen. Remote-first player for authorized M3U/M3U8. Search channels, keep favorites on device, add XMLTV. No bundled channels or catalog.
+
+https://developerscoffee.github.io/airo/aika-stream/
+```
+
+## Google Play Assets
+
+| Asset | Requirement | Status |
+| --- | --- | --- |
+| App icon | 512x512 PNG, 32-bit, alpha allowed | Exported: `docs/store-assets/airo-tv/play-icon-512x512.png`. |
+| Feature graphic | 1024x500 PNG/JPG | Ready in `docs/store-assets/airo-tv/feature-graphic-1024x500.png`. |
+| TV screenshots | 2-8 landscape screenshots, 1920x1080 recommended | Ready in `docs/store-assets/airo-tv/` (`01`–`04`). |
+| Demo video | Optional YouTube URL | Recommended after screenshots. |
+
+Screenshot capture guidance is maintained in
+[Aika Stream Release Media Assets](./AIKA_STREAM_MEDIA_ASSETS.md).
+
+## Amazon Appstore (Fire OS only)
+
+Not submitted. Paste this when the Amazon Developer Console listing is created.
+Do not target Vega OS. The binary is the Fire OS build
+(`APP_VARIANT=fireTv`), package `com.developerscoffee.tv.midas`, not the
+Play AAB and not a Vega build.
+
+| Field | Final metadata |
+| --- | --- |
+| App name | `Aika Stream` |
+| Package | `com.developerscoffee.tv.midas` |
+| Category | Video Players & Editors |
+| Device support | Fire OS devices only. Exclude Vega OS, including Fire TV Stick 4K Select. |
+| Privacy Policy URL | `https://developerscoffee.github.io/airo/legal/privacy-policy/` |
+| Website | `https://developerscoffee.github.io/airo/aika-stream/` |
+
+### Amazon description
+
+```text
+Aika Stream is a media player for Fire OS. Your sources. Your screen.
+
+Add an M3U or M3U8 playlist you are authorized to use, then browse, search,
+and play it with a remote. The app does not include channels, playlists,
+subscriptions, or a media catalog.
+
+Aika Stream does not run on Vega OS. Fire TV Stick 4K Select and other Vega
+OS devices cannot install Android apps.
+
+Aika Stream is a player only. It does not provide, host, sell, or distribute
+TV channels or IPTV services.
+
+Playback depends on your source, codec, device, and network. If playback
+buffers, clear the app cache only. Clearing app data removes the playlist
+saved on the device.
+```
+
+### Amazon release notes
+
+```text
+Fire OS player for authorized M3U/M3U8 playlists. Not supported on Vega OS.
+```
+
+## Apple App Store Draft
+
+iOS/iPadOS publication is not part of the first v2 Android release wave. Keep
+this draft for future App Store Connect preparation only; do not submit it
+until maintainers explicitly add iOS or tvOS to the release scope.
+
+| Field | Draft metadata |
+| --- | --- |
+| App name | `Aika Stream - IPTV Player` |
+| Subtitle | `IPTV playlist player` |
+| Category | Entertainment |
+| Keywords | `iptv,m3u,m3u8,streaming,live tv,playlist,chromecast,android tv,player,channels` |
+| Privacy Policy URL | `https://developerscoffee.github.io/airo/legal/privacy-policy/` |
+| App Privacy | Complete App Store Connect nutrition labels before submission. |
+
+Keyword length: 78/100 characters.
+
+### App Store Description Draft
+
+```text
+Aika Stream is an IPTV playlist player for users who bring their own authorized
+content sources. Import an M3U or M3U8 playlist URL, search channels by name,
+and watch supported live streams through a clean interface.
+
+Aika Stream does not provide channels, playlists, subscriptions, or IPTV services.
+Users are responsible for loading only legal content sources that they have the
+right to access.
+```
+
+## Console Fields Requiring Human Action
+
+- Amazon Developer Console app record for `com.developerscoffee.tv.midas`,
+  Fire OS device targeting, content rating, and the signed Fire OS binary.
+  Vega OS stays excluded.
+- Google Play IARC/content rating questionnaire.
+- Google Play Data Safety form.
+- Final Play listing upload and stakeholder approval.
+- Final Play icon, feature graphic, screenshots, and optional demo video.
+- Any future Apple App Store Connect app record, privacy nutrition labels,
+  screenshots, signing setup, and TestFlight/App Store upload credentials.

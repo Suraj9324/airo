@@ -1,0 +1,88 @@
+---
+name: Agent Task
+about: Task for a specific agent
+title: '[AGENT] '
+labels: ''
+assignees: ''
+---
+
+## Agent
+<!-- Select one: agent/core-architecture, agent/offline-sync, agent/ai-llm, agent/mobile-ui, agent/finance, agent/security, agent/ci-cd, agent/qa-testing, agent/observability, agent/devex, agent/release, agent/docs -->
+
+**Agent:** 
+
+## Task Details
+
+**Estimate (hours):**
+
+**Priority:** <!-- P0/P1/P2 -->
+
+## Description
+<!-- Describe the task -->
+
+## Critical Agent Gate
+
+**Problem:**
+
+**User / actor:**
+
+**Framework or application layer:**
+
+**Owning agent:** <!-- role name from docs/agents/COUNCIL.md -->
+
+**Reviewing agents:** <!-- from the Decision Matrix in docs/agents/COUNCIL.md -->
+
+
+**Impacted modules/files:**
+
+**Open questions:**
+
+**Decision:** Ready / Blocked
+
+## Feature Packet
+
+**Contract:**
+
+**Deterministic use cases:**
+
+**Automation flows:**
+
+**Security/privacy posture:**
+
+**Eval plan:**
+
+**Observability/traces:**
+
+**Rollback/migration plan:**
+
+**Verification environment:** Host-only / Pixel 9 / iPad / Fire TV Stick / emulator or simulator with explicit opt-in
+
+**Android Emulator risk accepted?** No / Yes (`AIRO_ALLOW_ANDROID_EMULATOR=true`)
+
+## Acceptance Criteria
+<!-- List specific, testable criteria -->
+- [ ] 
+- [ ] 
+- [ ] 
+
+## CI Checklist
+- [ ] `act` local run passed
+- [ ] `flutter analyze` clean
+- [ ] `flutter test` passes
+- [ ] Device-only checks identify the exact environment used
+- [ ] Android Emulator was not used unless the issue explicitly accepts the risk
+- [ ] Unit tests added
+- [ ] Widget/golden tests added (if UI)
+- [ ] Docs/ADRs updated (if applicable)
+
+## Files to Modify
+```
+path/to/file1
+path/to/file2
+```
+
+## Dependencies
+<!-- List any blocking issues or agent dependencies -->
+
+## Release Note Required?
+<!-- yes/no - Does this need to be mentioned in release notes? -->

@@ -1,0 +1,186 @@
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// A bounded, versioned local chat-history store. Message text is kept on the
+/// device; callers decide when a conversation should be exported or shared.
+class ChatHistoryEntry {
+  const ChatHistoryEntry({
+    required this.text,
+    required this.isUser,
+    required this.timestamp,
+    this.runId,
+    this.reasoningSummary,
+    this.reasoningLevel,
+    this.toolCalls = const [],
+  });
+
+  final String text;
+  final bool isUser;
+  final DateTime timestamp;
+
+  /// Inspector run for this assistant bubble. Absent on user rows and v1 history.
+  final String? runId;
+
+  /// Short user-facing basis. Never a private scratchpad.
+  final String? reasoningSummary;
+
+  /// Stable id: `none` / `light` / `standard` / `deep`.
+  final String? reasoningLevel;
+
+  final List<ChatHistoryToolCall> toolCalls;
+
+  Map<String, Object?> toJson() {
+    final json = <String, Object?>{
+      'text': text,
+      'isUser': isUser,
+      'timestamp': timestamp.toUtc().toIso8601String(),
+      if (runId != null) 'runId': runId,
+      if (reasoningSummary != null && reasoningSummary!.isNotEmpty)
+        'reasoningSummary': reasoningSummary,
+      if (reasoningLevel != null && reasoningLevel!.isNotEmpty)
+        'reasoningLevel': reasoningLevel,
+      if (toolCalls.isNotEmpty)
+        'toolCalls': [for (final call in toolCalls) call.toJson()],
+    };
+    json.removeWhere(
+      (key, _) => const {
+        'thoughts',
+        'thought',
+        'scratchpad',
+        'raw_thoughts',
+        'partialThinkingResult',
+      }.contains(key),
+    );
+    return json;
+  }
+
+  static ChatHistoryEntry? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final text = value['text'];
+    final isUser = value['isUser'];
+    final timestamp = value['timestamp'];
+    if (text is! String || isUser is! bool || timestamp is! String) {
+      return null;
+    }
+    final parsedTimestamp = DateTime.tryParse(timestamp);
+    if (parsedTimestamp == null) return null;
+    final runId = value['runId'];
+    final summary = value['reasoningSummary'];
+    final level = value['reasoningLevel'];
+    final toolCallsRaw = value['toolCalls'];
+    return ChatHistoryEntry(
+      text: text,
+      isUser: isUser,
+      timestamp: parsedTimestamp.toLocal(),
+      runId: runId is String && runId.isNotEmpty ? runId : null,
+      reasoningSummary: summary is String && summary.isNotEmpty
+          ? summary
+          : null,
+      reasoningLevel: level is String && level.isNotEmpty ? level : null,
+      toolCalls: toolCallsRaw is List
+          ? toolCallsRaw
+                .map(ChatHistoryToolCall.fromJson)
+                .whereType<ChatHistoryToolCall>()
+                .toList(growable: false)
+          : const [],
+    );
+  }
+}
+
+class ChatHistoryToolCall {
+  const ChatHistoryToolCall({required this.name, required this.argumentsJson});
+
+  final String name;
+  final String argumentsJson;
+
+  Map<String, Object?> toJson() => {
+    'name': name,
+    'argumentsJson': argumentsJson,
+  };
+
+  static ChatHistoryToolCall? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final name = value['name'];
+    final argumentsJson = value['argumentsJson'];
+    if (name is! String || argumentsJson is! String) return null;
+    if (name.isEmpty) return null;
+    return ChatHistoryToolCall(name: name, argumentsJson: argumentsJson);
+  }
+}
+
+class ChatHistoryStore {
+  ChatHistoryStore({this.preferences});
+
+  static const storageKey = 'airo_mind.chat_history.v1';
+  static const schemaVersion = 2;
+  static const minSupportedSchemaVersion = 1;
+  static const maxEntries = 200;
+  static const maxEntryCharacters = 20000;
+
+  final SharedPreferences? preferences;
+  Future<void> _writeTail = Future<void>.value();
+
+  Future<List<ChatHistoryEntry>> load() async {
+    // Do not read a partially updated snapshot while a queued write is still
+    // committing. This keeps restore deterministic after rapid chat turns or
+    // during route disposal.
+    await _writeTail;
+    final store = preferences ?? await SharedPreferences.getInstance();
+    final raw = store.getString(storageKey);
+    if (raw == null) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return const [];
+      final version = decoded['schemaVersion'];
+      if (version is! int ||
+          version < minSupportedSchemaVersion ||
+          version > schemaVersion) {
+        return const [];
+      }
+      final entries = decoded['entries'];
+      if (entries is! List) return const [];
+      return entries
+          .map(ChatHistoryEntry.fromJson)
+          .whereType<ChatHistoryEntry>()
+          .toList(growable: false);
+    } on Object {
+      return const [];
+    }
+  }
+
+  Future<void> save(Iterable<ChatHistoryEntry> entries) async {
+    final bounded = entries
+        // Do not persist transient streaming placeholders. A generation can add
+        // an empty assistant bubble before the first token arrives; if the app
+        // is paused or killed at that point, restoring that placeholder creates
+        // a blank chat row on the next launch.
+        .where((entry) => entry.text.trim().isNotEmpty)
+        .where((entry) => entry.text.length <= maxEntryCharacters)
+        .toList(growable: false);
+    final start = bounded.length > maxEntries ? bounded.length - maxEntries : 0;
+    final payload = jsonEncode({
+      'schemaVersion': schemaVersion,
+      'entries': bounded.skip(start).map((entry) => entry.toJson()).toList(),
+    });
+    return _enqueueWrite(() async {
+      final store = preferences ?? await SharedPreferences.getInstance();
+      await store.setString(storageKey, payload);
+    });
+  }
+
+  Future<void> clear() {
+    return _enqueueWrite(() async {
+      final store = preferences ?? await SharedPreferences.getInstance();
+      await store.remove(storageKey);
+    });
+  }
+
+  Future<void> _enqueueWrite(Future<void> Function() operation) {
+    final result = _writeTail.then<void>((_) => operation());
+    // Keep the queue usable after a failed write, while still returning the
+    // original error to the caller that requested this operation.
+    _writeTail = result.then<void>((_) {}, onError: (_, _) {});
+    return result;
+  }
+}

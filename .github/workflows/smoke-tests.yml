@@ -1,0 +1,203 @@
+name: Smoke Tests
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  smoke-test-web:
+    name: Web Smoke Tests
+    runs-on: ubuntu-latest
+    outputs:
+      smoke_status: ${{ steps.smoke_tests.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      
+      - name: Install Playwright
+        run: |
+          cd e2e
+          npm ci
+          npx playwright install --with-deps chromium
+      
+      - name: Run Critical Path Tests
+        id: smoke_tests
+        run: |
+          cd e2e
+          npx playwright test --grep "@smoke" --reporter=html
+        continue-on-error: true
+      
+      - name: Upload Test Report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: smoke-test-report-web
+          path: e2e/playwright-report/
+          retention-days: 7
+
+  smoke-test-android:
+    name: Android Smoke Tests
+    runs-on: ubuntu-latest
+    outputs:
+      build_status: ${{ steps.build_debug_apk.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+      
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.4'
+          channel: 'stable'
+
+      - name: Get dependencies
+        run: |
+          cd app
+          flutter pub get
+
+      - name: Configure firebase_options.dart
+        env:
+          FIREBASE_OPTIONS_DART_B64: ${{ secrets.FIREBASE_OPTIONS_DART_B64 }}
+        run: |
+          cd app
+          if [[ -n "$FIREBASE_OPTIONS_DART_B64" ]]; then
+            echo "$FIREBASE_OPTIONS_DART_B64" | base64 -d > lib/firebase_options.dart
+            echo "Using FIREBASE_OPTIONS_DART_B64."
+          else
+            cp lib/firebase_options.dart.template lib/firebase_options.dart
+            echo "::warning::FIREBASE_OPTIONS_DART_B64 is not set; using placeholder firebase_options.dart."
+          fi
+
+      - name: Build Debug APK
+        id: build_debug_apk
+        run: |
+          cd app
+          flutter build apk --debug
+      
+      - name: Verify APK exists
+        run: |
+          if [ -f "app/build/app/outputs/flutter-apk/app-debug.apk" ]; then
+            echo "✅ APK built successfully"
+            ls -la app/build/app/outputs/flutter-apk/
+          else
+            echo "⚠️ APK not found"
+          fi
+        continue-on-error: true
+
+  health-check:
+    name: Release Health Check
+    needs:
+      - smoke-test-web
+      - smoke-test-android
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.4'
+          channel: 'stable'
+      
+      - name: Get dependencies
+        run: |
+          cd app
+          flutter pub get
+
+      - name: Check pubspec.yaml validity
+        id: dependency_check
+        run: |
+          cd app
+          flutter pub deps
+          echo "✅ Dependencies resolved"
+        continue-on-error: true
+      
+      - name: Check for outdated dependencies
+        id: outdated_check
+        run: |
+          cd app
+          flutter pub outdated || true
+        continue-on-error: true
+      
+      - name: Generate Smoke Test Report
+        if: always()
+        run: |
+          mkdir -p reports
+          web_status="⚠️ Not run"
+          android_status="⚠️ Not run"
+          dependencies_status="⚠️ Not run"
+          outdated_status="⚠️ Review manually"
+
+          case "${{ needs.smoke-test-web.outputs.smoke_status }}" in
+            success) web_status="✅ Passed" ;;
+            failure) web_status="❌ Failed" ;;
+            cancelled) web_status="⚠️ Cancelled" ;;
+            skipped) web_status="⚠️ Skipped" ;;
+          esac
+
+          case "${{ needs.smoke-test-android.outputs.build_status }}" in
+            success) android_status="✅ Passed" ;;
+            failure) android_status="❌ Failed" ;;
+            cancelled) android_status="⚠️ Cancelled" ;;
+            skipped) android_status="⚠️ Skipped" ;;
+          esac
+
+          case "${{ steps.dependency_check.outcome }}" in
+            success) dependencies_status="✅ Resolved" ;;
+            failure) dependencies_status="❌ Failed" ;;
+            cancelled) dependencies_status="⚠️ Cancelled" ;;
+            skipped) dependencies_status="⚠️ Skipped" ;;
+          esac
+
+          case "${{ steps.outdated_check.outcome }}" in
+            success) outdated_status="✅ Report generated" ;;
+            failure) outdated_status="❌ Failed" ;;
+            cancelled) outdated_status="⚠️ Cancelled" ;;
+            skipped) outdated_status="⚠️ Skipped" ;;
+          esac
+
+          cat > reports/smoke-test-summary.md <<EOF
+          # 🔥 Smoke Test Summary
+          
+          **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Commit**: ${{ github.sha }}
+          **Branch**: ${{ github.ref_name }}
+          
+          ## Results
+          
+          | Test | Status |
+          |------|--------|
+          | Web smoke tests | ${web_status} |
+          | Android debug build | ${android_status} |
+          | Dependencies | ${dependencies_status} |
+          | Outdated dependency report | ${outdated_status} |
+          EOF
+      
+      - name: Upload Summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-summary
+          path: reports/
+          retention-days: 30

@@ -1,0 +1,223 @@
+// Placeholder Firebase configuration with multi-platform variant support.
+//
+// This checked-in file keeps local analysis/builds working when no secret
+// Firebase config has been provisioned. CI and release workflows may overwrite
+// it with real values from `FIREBASE_OPTIONS_DART_B64`.
+//
+// Do not commit real Firebase keys into this file.
+//
+// Supports: Mobile Full (io.airo.app), Mobile Streaming
+// (io.airo.app.streaming), Android TV (com.developerscoffee.tv.midas), Airo Mind
+// (io.airo.app.mind)
+
+import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+
+/// App variant for Firebase configuration selection
+// Set via --dart-define=APP_VARIANT=<value>
+enum AppVariant {
+  full, // io.airo.app - All features
+  streaming, // io.airo.app.streaming - Music + IPTV
+  tv, // com.developerscoffee.tv.midas - IPTV only
+  mind, // io.airo.app.mind - Airo Mind standalone shell
+}
+
+/// Default [FirebaseOptions] for use with your Firebase apps.
+/// Supports multiple Android app variants under the same Firebase project.
+class DefaultFirebaseOptions {
+  /// Current app variant from dart-define
+  static const String _variantString = String.fromEnvironment(
+    'APP_VARIANT',
+    defaultValue: 'full',
+  );
+
+  /// Get the current app variant
+  static AppVariant get currentVariant {
+    switch (_variantString) {
+      case 'tv':
+      case 'fireTv':
+        return AppVariant.tv;
+      case 'streaming':
+        return AppVariant.streaming;
+      case 'mind':
+        return AppVariant.mind;
+      default:
+        return AppVariant.full;
+    }
+  }
+
+  /// Returns false for generated placeholder options that would crash native
+  /// Firebase initialization before Dart can recover.
+  static bool isConfigured(FirebaseOptions options) {
+    return _isConfigured(options);
+  }
+
+  /// Get Firebase options for the current platform and variant
+  static FirebaseOptions get currentPlatform {
+    if (kIsWeb) {
+      return web;
+    }
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return _getAndroidOptions();
+      case TargetPlatform.iOS:
+        return ios;
+      case TargetPlatform.macOS:
+        return macos;
+      case TargetPlatform.windows:
+        return windows;
+      case TargetPlatform.linux:
+        throw UnsupportedError(
+          'DefaultFirebaseOptions have not been configured for linux - '
+          'you can reconfigure this by running the FlutterFire CLI again.',
+        );
+      default:
+        throw UnsupportedError(
+          'DefaultFirebaseOptions are not supported for this platform.',
+        );
+    }
+  }
+
+  /// Whether the selected platform has a real Firebase app id configured.
+  ///
+  /// The iOS/macOS/windows entries currently use placeholder app ids. Passing
+  /// those placeholders into Firebase iOS causes a native NSException before
+  /// Dart can handle the error, so callers should skip initialization when this
+  /// returns false.
+  static bool get isCurrentPlatformConfigured {
+    if (kIsWeb) {
+      return _isConfigured(web);
+    }
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return _isConfigured(_getAndroidOptions());
+      case TargetPlatform.iOS:
+        return _isConfigured(ios);
+      case TargetPlatform.macOS:
+        return _isConfigured(macos);
+      case TargetPlatform.windows:
+        return _isConfigured(windows);
+      case TargetPlatform.linux:
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  static bool _isConfigured(FirebaseOptions options) {
+    final appId = options.appId;
+    return appId.isNotEmpty &&
+        !appId.contains('YOUR_') &&
+        !appId.contains('TODO');
+  }
+
+  /// Get Android options based on current build variant
+  static FirebaseOptions _getAndroidOptions() {
+    switch (currentVariant) {
+      case AppVariant.tv:
+        return androidTv;
+      case AppVariant.streaming:
+        return androidStreaming;
+      case AppVariant.mind:
+        return androidMind;
+      case AppVariant.full:
+        return android;
+    }
+  }
+
+  // ===========================================================================
+  // Web Configuration
+  // ===========================================================================
+  static const FirebaseOptions web = FirebaseOptions(
+    apiKey: 'YOUR_WEB_API_KEY',
+    appId: 'YOUR_WEB_APP_ID',
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    authDomain: 'YOUR_PROJECT_ID.firebaseapp.com',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+  );
+
+  // ===========================================================================
+  // Android Configurations (Multiple variants, same Firebase project)
+  // ===========================================================================
+
+  /// Android Mobile Full - io.airo.app (existing)
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'YOUR_ANDROID_API_KEY',
+    appId: 'YOUR_ANDROID_APP_ID',
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+  );
+
+  /// Android TV - com.developerscoffee.tv.midas
+  static const FirebaseOptions androidTv = FirebaseOptions(
+    apiKey: 'YOUR_ANDROID_TV_API_KEY',
+    appId: 'YOUR_ANDROID_TV_APP_ID',
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+  );
+
+  /// Airo Mind - io.airo.app.mind
+  ///
+  /// The Mind shell initializes Firebase only for auth parity with the super
+  /// app (the assistant's profile screen signs in with Google). Gradle installs
+  /// this variant as `io.airo.app.mind`, so Dart must hand
+  /// `Firebase.initializeApp` that client's own appId -- handing it the
+  /// `io.airo.app` one instead resolves as a package/signature mismatch and
+  /// Google Sign-In fails with `ApiException: 10`.
+  static const FirebaseOptions androidMind = FirebaseOptions(
+    apiKey: 'YOUR_ANDROID_MIND_API_KEY',
+    appId: 'YOUR_ANDROID_MIND_APP_ID',
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+  );
+
+  /// Android Streaming - io.airo.app.streaming
+  ///
+  /// Update this after registering the io.airo.app.streaming Android app in
+  /// the Firebase console and downloading its client config.
+  static const FirebaseOptions androidStreaming = FirebaseOptions(
+    apiKey: 'YOUR_ANDROID_STREAMING_API_KEY',
+    appId: 'TODO_REGISTER_IO_AIRO_APP_STREAMING',
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+  );
+
+  // ===========================================================================
+  // iOS Configuration
+  // ===========================================================================
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'YOUR_IOS_API_KEY',
+    appId: 'YOUR_IOS_APP_ID', // TODO: Get from Firebase Console
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+    iosBundleId: 'com.developerscoffee.airo',
+  );
+
+  // ===========================================================================
+  // Desktop Configurations
+  // ===========================================================================
+  static const FirebaseOptions macos = FirebaseOptions(
+    apiKey: 'YOUR_MACOS_API_KEY',
+    appId: 'YOUR_MACOS_APP_ID', // TODO: Get from Firebase Console
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+    iosBundleId: 'com.developerscoffee.airo',
+  );
+
+  static const FirebaseOptions windows = FirebaseOptions(
+    apiKey: 'YOUR_WINDOWS_API_KEY',
+    appId: 'YOUR_WINDOWS_APP_ID', // TODO: Get from Firebase Console
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    projectId: 'YOUR_PROJECT_ID',
+    authDomain: 'YOUR_PROJECT_ID.firebaseapp.com',
+    storageBucket: 'YOUR_PROJECT_ID.firebasestorage.app',
+  );
+}

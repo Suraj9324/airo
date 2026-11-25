@@ -1,0 +1,236 @@
+name: IPTV country guide to R2
+
+# Cheap product-default EPG publish. Fetches one country's guide from up to
+# three static mirrors (epg.pw, iptv-epg.org, epgshare01.online), remaps
+# each onto iptv-org catalog ids, keeps whichever has the most programmes,
+# and uploads only guide_XX.xml.gz + manifest.json + epg_catalog.json.
+# Never fetches a source's global/ALL export, and never uploads a
+# playlist/M3U.
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+    inputs:
+      country:
+        description: 'ISO country code for the guide mirrors'
+        required: false
+        default: 'IN'
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.11'
+  COUNTRY: ${{ github.event.inputs.country || 'IN' }}
+
+jobs:
+  publish:
+    name: Publish guide shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: iptv-data
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Normalize country
+        id: country
+        working-directory: .
+        run: |
+          set -euo pipefail
+          COUNTRY="$(printf '%s' "${{ env.COUNTRY }}" | tr '[:lower:]' '[:upper:]')"
+          if [[ ! "$COUNTRY" =~ ^[A-Z]{2}$ ]]; then
+            echo "::error::Country must be a two-letter ISO code, got: ${COUNTRY}"
+            exit 1
+          fi
+          echo "code=$COUNTRY" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch iptv-org catalog
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/guide-r2
+          curl --fail --location --retry 3 --max-time 120 \
+            https://iptv-org.github.io/api/channels.json \
+            --output /tmp/guide-r2/channels.json
+
+      - name: Fetch and remap epg.pw guide (best-effort)
+        id: fetch_epg_pw
+        env:
+          COUNTRY: ${{ steps.country.outputs.code }}
+        run: |
+          set -euo pipefail
+          if curl --fail --location --retry 3 --max-time 120 \
+               "https://epg.pw/xmltv/epg_${COUNTRY}.xml.gz" \
+               --output "/tmp/guide-r2/epg_pw_${COUNTRY}.xml.gz" && \
+             gunzip -c "/tmp/guide-r2/epg_pw_${COUNTRY}.xml.gz" > "/tmp/guide-r2/epg_pw_${COUNTRY}.xml" && \
+             python -m src.epg_pw_remap \
+               --input "/tmp/guide-r2/epg_pw_${COUNTRY}.xml" \
+               --iptv-org-channels /tmp/guide-r2/channels.json \
+               --output-dir output/remap_epg_pw \
+               --countries "$COUNTRY"; then
+            :
+          else
+            echo "epg.pw has no usable guide for ${COUNTRY} -- skipping this source."
+          fi
+
+      - name: Fetch and remap iptv-epg.org guide (best-effort)
+        id: fetch_iptv_epg_org
+        env:
+          COUNTRY: ${{ steps.country.outputs.code }}
+        run: |
+          set -euo pipefail
+          LOWER="$(printf '%s' "$COUNTRY" | tr '[:upper:]' '[:lower:]')"
+          if curl --fail --location --retry 2 --max-time 60 \
+               "https://iptv-epg.org/files/epg-${LOWER}.xml" \
+               --output "/tmp/guide-r2/iptv_epg_org_${COUNTRY}.xml" && \
+             python -m src.epg_pw_remap \
+               --input "/tmp/guide-r2/iptv_epg_org_${COUNTRY}.xml" \
+               --iptv-org-channels /tmp/guide-r2/channels.json \
+               --output-dir output/remap_iptv_epg_org \
+               --countries "$COUNTRY"; then
+            :
+          else
+            echo "iptv-epg.org has no usable guide for ${COUNTRY} -- skipping this source."
+          fi
+
+      - name: Fetch and remap epgshare01 guide (best-effort)
+        id: fetch_epgshare01
+        env:
+          COUNTRY: ${{ steps.country.outputs.code }}
+        run: |
+          set -euo pipefail
+          if curl --fail --location --retry 2 --max-time 60 \
+               "https://epgshare01.online/epgshare01/epg_ripper_${COUNTRY}1.xml.gz" \
+               --output "/tmp/guide-r2/epgshare01_${COUNTRY}.xml.gz" && \
+             gunzip -c "/tmp/guide-r2/epgshare01_${COUNTRY}.xml.gz" > "/tmp/guide-r2/epgshare01_${COUNTRY}.xml" && \
+             python -m src.epg_pw_remap \
+               --input "/tmp/guide-r2/epgshare01_${COUNTRY}.xml" \
+               --iptv-org-channels /tmp/guide-r2/channels.json \
+               --output-dir output/remap_epgshare01 \
+               --countries "$COUNTRY"; then
+            :
+          else
+            echo "epgshare01 has no usable guide for ${COUNTRY} -- skipping this source."
+          fi
+
+      - name: Pick best source per country and build catalog
+        env:
+          COUNTRY: ${{ steps.country.outputs.code }}
+        run: |
+          set -euo pipefail
+          rm -rf output/best output/r2
+          python -m src.epg_publish_prefer select-best-source \
+            --source "epg_pw=output/remap_epg_pw" \
+            --source "iptv_epg_org=output/remap_iptv_epg_org" \
+            --source "epgshare01=output/remap_epgshare01" \
+            --output-dir output/best \
+            --catalog-path output/best/epg_catalog.json \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if [ ! -f "output/best/${COUNTRY}.xml" ]; then
+            echo "::error::No source produced a guide for ${COUNTRY}"
+            exit 1
+          fi
+
+      - name: Gzip winning source and write manifest
+        env:
+          COUNTRY: ${{ steps.country.outputs.code }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from src.epg_pw_remap import write_gzip_guides
+
+          country = os.environ["COUNTRY"]
+          xml_bytes = (Path("output/best") / f"{country}.xml").read_bytes()
+          output_dir = Path("output/r2")
+          checksums = write_gzip_guides({country: xml_bytes}, output_dir)
+          manifest = {
+              "files": {key: f"{key}.xml.gz" for key in checksums},
+              "fileChecksums": checksums,
+          }
+          (output_dir / "manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Verify remapped shard
+        env:
+          COUNTRY: ${{ steps.country.outputs.code }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          import json
+          import os
+          from pathlib import Path
+
+          country = os.environ["COUNTRY"]
+          output = Path("output/r2")
+          key = f"guide_{country}"
+          manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+          filename = manifest["files"][key]
+          checksum = manifest["fileChecksums"][key]
+          raw = (output / filename).read_bytes()
+          import hashlib
+          actual = hashlib.sha256(raw).hexdigest()
+          if actual != checksum:
+              raise SystemExit(f"checksum mismatch for {filename}")
+          xml = gzip.decompress(raw)
+          from xml.etree import ElementTree as ET
+          root = ET.fromstring(xml)
+          leaked = [
+              value
+              for value in (
+                  [el.get("id") or "" for el in root.findall("channel")]
+                  + [el.get("channel") or "" for el in root.findall("programme")]
+              )
+              if value.isdigit()
+          ]
+          if leaked:
+              raise SystemExit(
+                  "raw numeric id leaked into published XMLTV: "
+                  + ", ".join(sorted(set(leaked))[:8])
+              )
+          print(f"{filename} bytes={len(raw)} sha256={checksum}")
+          PY
+
+      - name: Upload guide shards and catalog to Cloudflare R2
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] || [ -z "${AWS_ACCESS_KEY_ID:-}" ] || \
+             [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -z "${CLOUDFLARE_R2_BUCKET:-}" ]; then
+            echo "CLOUDFLARE_R2_* secrets are not configured -- skipping the R2 upload."
+            echo "output/r2/ and output/best/ are still available from the workflow logs above."
+            exit 0
+          fi
+
+          export AWS_ENDPOINT_URL="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp output/r2/manifest.json \
+            "s3://${CLOUDFLARE_R2_BUCKET}/iptv-data/manifest.json" \
+            --content-type application/json \
+            --cache-control 'public, max-age=300'
+          for guide in output/r2/guide_*.xml.gz; do
+            [ -e "$guide" ] || continue
+            aws s3 cp "$guide" "s3://${CLOUDFLARE_R2_BUCKET}/iptv-data/$(basename "$guide")" \
+              --content-type application/gzip \
+              --cache-control 'public, max-age=300'
+          done
+          aws s3 cp output/best/epg_catalog.json \
+            "s3://${CLOUDFLARE_R2_BUCKET}/iptv-data/epg_catalog.json" \
+            --content-type application/json \
+            --cache-control 'public, max-age=300'
